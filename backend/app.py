@@ -873,8 +873,11 @@ def build_bot_help_message():
     return (
         "可用命令：\n"
         "/status - 查看当前API账户、服务器、监控和抢购概览\n"
+        "/status-all - 查看所有API账户概览\n"
         "/monitor - 查看当前监控任务\n"
+        "/monitor-all - 查看所有API账户监控任务\n"
         "/autobuy - 查看当前抢购任务\n"
+        "/autobuy-all - 查看所有API账户抢购任务\n"
         "/switch - 依次循环切换 API 账户\n"
         "/switch <邮箱> - 切换到指定邮箱对应的 API 账户\n\n"
         "/alias - 为所有API账户下服务器绑定别名\n\n"
@@ -998,6 +1001,16 @@ def build_status_message(account_id):
             ])
     else:
         lines.append("- 当前账户下暂无服务器")
+    return '\n'.join(lines).strip()
+
+
+def build_status_all_message():
+    if not accounts:
+        return "当前没有可用的 API 账户。"
+    lines = [f"所有账户概览（{len(accounts)}个账户）"]
+    for account_id in accounts.keys():
+        lines.append("")
+        lines.append(build_status_message(account_id))
     return '\n'.join(lines).strip()
 
 
@@ -1275,6 +1288,36 @@ def build_monitor_message(account_id):
     return '\n'.join(lines)
 
 
+def build_monitor_all_message():
+    if not accounts:
+        return "当前没有可用的 API 账户。"
+    total = 0
+    lines = [f"所有账户监控任务总览（{len(accounts)}个账户）"]
+    for account_id, acc in accounts.items():
+        subscriptions = get_monitor_for_account(account_id).subscriptions
+        account_label = acc.get('alias') or account_id
+        lines.append("")
+        lines.append(f"账户: {account_label}")
+        if not subscriptions:
+            lines.append("- 当前账户没有监控任务")
+            continue
+        total += len(subscriptions)
+        for index, sub in enumerate(subscriptions, 1):
+            dcs = sub.get('datacenters') or []
+            dc_text = ','.join([dc.upper() for dc in dcs]) if dcs else '全部机房'
+            plan_summary = format_plan_summary(sub.get('planCode'))
+            lines.extend([
+                f"[{index}] {plan_summary}",
+                f"  机房     : {dc_text}",
+                f"  自动下单 : {'是' if sub.get('autoOrder') else '否'}",
+                f"  缺货通知 : {'是' if sub.get('notifyUnavailable') else '否'}",
+                ""
+            ])
+    if total == 0:
+        return "所有账户当前都没有监控任务。"
+    return '\n'.join(lines).strip()
+
+
 def build_autobuy_message(account_id):
     if not account_id or account_id not in accounts:
         return "当前没有可用的 API 账户。"
@@ -1295,6 +1338,37 @@ def build_autobuy_message(account_id):
             ""
         ])
     return '\n'.join(lines)
+
+
+def build_autobuy_all_message():
+    if not accounts:
+        return "当前没有可用的 API 账户。"
+    total = 0
+    lines = [f"所有账户抢购任务总览（{len(accounts)}个账户）"]
+    for account_id, acc in accounts.items():
+        items = [item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']]
+        account_label = acc.get('alias') or account_id
+        lines.append("")
+        lines.append(f"账户: {account_label}")
+        if not items:
+            lines.append("- 当前账户没有抢购任务")
+            continue
+        total += len(items)
+        for index, item in enumerate(items, 1):
+            dcs = item.get('datacenters') or ([item.get('datacenter')] if item.get('datacenter') else [])
+            dc_text = ' > '.join([str(dc).upper() for dc in dcs if dc]) if dcs else '全部机房'
+            plan_summary = format_plan_summary(item.get('planCode'))
+            lines.extend([
+                f"[{index}] {plan_summary}",
+                f"  机房     : {dc_text}",
+                f"  状态     : {item.get('status')}",
+                f"  数量     : {item.get('quantity', 1)}",
+                f"  自动支付 : {'是' if item.get('auto_pay') else '否'}",
+                ""
+            ])
+    if total == 0:
+        return "所有账户当前都没有抢购任务。"
+    return '\n'.join(lines).strip()
 
 
 def switch_bot_account(channel: str, user_key: str, email=None):
@@ -1388,10 +1462,16 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
         }
     if lower == '/status':
         return {"text": build_status_message(effective_account)}
+    if lower == '/status-all':
+        return {"text": build_status_all_message()}
     if lower == '/monitor':
         return {"text": build_monitor_message(effective_account)}
+    if lower == '/monitor-all':
+        return {"text": build_monitor_all_message()}
     if lower == '/autobuy':
         return {"text": build_autobuy_message(effective_account)}
+    if lower == '/autobuy-all':
+        return {"text": build_autobuy_all_message()}
     if lower.startswith('/switch'):
         parts = normalized.split(maxsplit=1)
         email = parts[1].strip() if len(parts) > 1 else None
