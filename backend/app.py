@@ -5049,6 +5049,37 @@ def send_feishu_test_card():
         add_log("ERROR", f"发送飞书测试卡片失败: {str(e)}", "feishu")
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+@app.route('/api/server-aliases', methods=['GET'])
+def get_server_aliases_api():
+    account_id = get_account_id_from_request()
+    if account_id:
+        aliases = {k.split(':', 1)[1]: v for k, v in server_aliases.items() if k.startswith(f"{account_id}:")}
+        return jsonify({"success": True, "aliases": aliases, "accountId": account_id})
+    return jsonify({"success": True, "aliases": server_aliases})
+
+
+@app.route('/api/server-aliases', methods=['POST'])
+def set_server_alias_api():
+    data = request.json or {}
+    account_id = data.get('accountId') or get_account_id_from_request()
+    service_name = data.get('serviceName')
+    alias = (data.get('alias') or '').strip()
+    if not account_id or not service_name or not alias:
+        return jsonify({"success": False, "error": "缺少 accountId、serviceName 或 alias"}), 400
+    set_server_alias(account_id, service_name, alias)
+    return jsonify({"success": True, "message": "服务器别名已保存"})
+
+
+@app.route('/api/server-aliases', methods=['DELETE'])
+def remove_server_alias_api():
+    account_id = request.args.get('accountId') or get_account_id_from_request()
+    service_name = request.args.get('serviceName')
+    if not account_id or not service_name:
+        return jsonify({"success": False, "error": "缺少 accountId 或 serviceName"}), 400
+    existed = remove_server_alias(account_id, service_name)
+    return jsonify({"success": True, "removed": existed})
+
 @app.route('/api/servers', methods=['GET'])
 def get_servers():
     global server_plans, server_list_cache

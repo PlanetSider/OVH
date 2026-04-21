@@ -263,6 +263,7 @@ const ServerControlPage: React.FC = () => {
   const [ipmiLink, setIpmiLink] = useState<string>('');
   const [ipmiLoading, setIpmiLoading] = useState(false);
   const [ipmiCountdown, setIpmiCountdown] = useState(20);
+  const [removingAlias, setRemovingAlias] = useState(false);
 
   // 安装进度监控
   const [showInstallProgress, setShowInstallProgress] = useState(false);
@@ -285,6 +286,26 @@ const ServerControlPage: React.FC = () => {
     
     // 返回单盘容量（GB）
     return singleDiskCapacity;
+  };
+
+  const handleRemoveServerAlias = async () => {
+    if (!selectedServer?.serviceName) return;
+    setRemovingAlias(true);
+    try {
+      await api.delete('/server-aliases', {
+        params: { serviceName: selectedServer.serviceName }
+      });
+      const response = await api.get('/server-control/list');
+      const refreshed = response.data?.servers || [];
+      setServers(refreshed);
+      const nextSelected = refreshed.find((s: ServerInfo) => s.serviceName === selectedServer.serviceName) || null;
+      setSelectedServer(nextSelected);
+      showToast('服务器别名已移除', 'success');
+    } catch (error: any) {
+      showToast(error?.response?.data?.error || error?.message || '移除别名失败', 'error');
+    } finally {
+      setRemovingAlias(false);
+    }
   };
 
   // 根据 RAID 级别计算可用容量
@@ -2259,6 +2280,17 @@ const ServerControlPage: React.FC = () => {
                     <div className="py-2">
                       <span className="text-cyber-muted">原始名称:</span>
                       <span className="text-cyber-text ml-2">{selectedServer.originalName}</span>
+                    </div>
+                  )}
+                  {selectedServer.alias && (
+                    <div className="py-2">
+                      <button
+                        onClick={handleRemoveServerAlias}
+                        disabled={removingAlias}
+                        className="px-3 py-1 bg-red-500/10 border border-red-500/30 rounded text-red-400 hover:bg-red-500/20 transition-all disabled:opacity-50"
+                      >
+                        {removingAlias ? '移除中...' : '移除别名'}
+                      </button>
                     </div>
                   )}
                   <div className="py-2">

@@ -100,7 +100,7 @@ interface ServerPlan {
 const ServersPage = () => {
   const isMobile = useIsMobile();
   const [showBatchMonitorDialog, setShowBatchMonitorDialog] = useState(false);
-  const { isAuthenticated } = useAPI();
+  const { isAuthenticated, currentAccountId } = useAPI();
   const [servers, setServers] = useState<ServerPlan[]>([]);
   const [filteredServers, setFilteredServers] = useState<ServerPlan[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -193,6 +193,21 @@ const ServersPage = () => {
   });
   // 使用ref存储订阅列表，确保排序时使用最新值
   const subscribedServersRef = useRef<Set<string>>(subscribedServers);
+
+  const removeServerAlias = async (server: ServerPlan) => {
+    try {
+      await api.delete('/server-aliases', {
+        params: {
+          accountId: currentAccountId || undefined,
+          serviceName: server.originalName || server.name
+        }
+      });
+      toast.success('服务器别名已移除');
+      await fetchServers(false);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || '移除别名失败');
+    }
+  };
 
   // 前端缓存已移除（后端有缓存）
 
@@ -2016,6 +2031,15 @@ const ServersPage = () => {
                       <div className="bg-cyber-accent/10 px-1 py-0.5 rounded text-[9px] border border-cyber-accent/20 text-cyber-accent truncate max-w-[120px]">
                         {server.name}
                       </div>
+                      {server.alias && (
+                        <button
+                          onClick={() => removeServerAlias(server)}
+                          className="px-1.5 py-0.5 rounded text-[9px] border border-red-500/30 text-red-400 bg-red-500/10 hover:bg-red-500/20 transition-all whitespace-nowrap flex-shrink-0"
+                          title="移除别名"
+                        >
+                          移除别名
+                        </button>
+                      )}
                       {subscribedServers.has(server.planCode) && (
                         <span className="relative flex items-center gap-1 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-md text-[9px] sm:text-[10px] font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white hover:from-cyan-400 hover:to-blue-500 hover:-translate-y-0.5 transition-all duration-200 whitespace-nowrap flex-shrink-0" title="已订阅监控">
                           <Bell size={isMobile ? 10 : 12} />
