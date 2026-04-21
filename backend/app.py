@@ -145,6 +145,7 @@ feishu_users = {}
 bot_user_account_selections = {}
 server_aliases = {}
 bot_pending_actions = {}
+processed_bot_messages = {}
 
 # 全局删除任务ID集合（用于立即停止后台线程处理）
 deleted_task_ids = set()
@@ -164,6 +165,20 @@ queue_lock = threading.RLock()
 processing_item_ids = set()
 account_checkout_semaphores = {}
 executor = ThreadPoolExecutor(max_workers=3)
+
+
+def is_duplicate_bot_message(channel: str, message_key: str, ttl_seconds: int = 600):
+    if not message_key:
+        return False
+    now_ts = time.time()
+    expired = [k for k, ts in processed_bot_messages.items() if (now_ts - ts) > ttl_seconds]
+    for k in expired:
+        processed_bot_messages.pop(k, None)
+    cache_key = f"{channel}:{message_key}"
+    if cache_key in processed_bot_messages:
+        return True
+    processed_bot_messages[cache_key] = now_ts
+    return False
 
 
 def get_feishu_config():
@@ -1179,6 +1194,35 @@ def build_tg_inline_keyboard(buttons, row_size=2):
             inline_keyboard.append(row)
             row = []
     return {'inline_keyboard': inline_keyboard}
+
+
+def build_alias_list_message():
+    if not server_aliases:
+        return "当前没有已绑定的服务器别名。"
+
+    grouped = {}
+    for key, alias in server_aliases.items():
+        if ':' not in key:
+            continue
+        account_id, service_name = key.split(':', 1)
+        grouped.setdefault(account_id, []).append({
+            'serviceName': service_name,
+            'alias': alias
+        })
+
+    if not grouped:
+        return "当前没有已绑定的服务器别名。"
+
+    lines = ["服务器别名清单"]
+    for account_id, items in grouped.items():
+        acc = accounts.get(account_id) or {}
+        account_label = acc.get('alias') or account_id
+        lines.append("")
+        lines.append(f"账户: {account_label}")
+        for index, item in enumerate(sorted(items, key=lambda x: x['serviceName']), 1):
+            lines.append(f"[{index}] {item['alias']}")
+            lines.append(f"  服务名 : {item['serviceName']}")
+    return '\n'.join(lines).strip()
 
 
 def build_alias_list_message():
@@ -4735,6 +4779,7 @@ def telegram_webhook():
             message_obj = data["message"]
             text = message_obj.get("text", "").strip()
             chat_id = message_obj.get("chat", {}).get("id")
+            message_id = message_obj.get("message_id")
             from_user = message_obj.get("from", {})
             user_id = from_user.get("id")
             
@@ -4742,6 +4787,9 @@ def telegram_webhook():
             tg_token = config.get("tgToken")
             
             add_log("INFO", f"收到Telegram普通消息: user_id={user_id}, text={text[:100]}", "telegram")
+            if is_duplicate_bot_message('telegram', f"{chat_id}:{message_id}"):
+                add_log("INFO", f"忽略重复Telegram消息: chat_id={chat_id}, message_id={message_id}", "telegram")
+                return jsonify({"ok": True})
             response_payload = dispatch_bot_command('telegram', str(user_id), text)
             if tg_token and chat_id and response_payload:
                 requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
@@ -4806,6 +4854,7 @@ def feishu_events():
     sender = extract_feishu_open_id(body)
     sender_name = extract_feishu_user_name(body)
     message = event.get("message") or {}
+    message_id = message.get("message_id") or ''
     content_str = message.get("content") or "{}"
     try:
         content = json.loads(content_str)
@@ -4816,6 +4865,9 @@ def feishu_events():
     if sender:
         bind_feishu_user(sender, sender_name)
     if not text:
+        return jsonify({"code": 0})
+    if is_duplicate_bot_message('feishu', message_id):
+        add_log("INFO", f"忽略重复飞书消息: open_id={sender or '-'}, message_id={message_id or '-'}", "feishu")
         return jsonify({"code": 0})
 
     response_payload = dispatch_bot_command('feishu', sender or 'anonymous', text)
@@ -6748,6 +6800,7 @@ def get_my_servers():
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
+    account_id = get_account_id_from_request()
     client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
