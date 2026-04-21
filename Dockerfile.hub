@@ -33,7 +33,8 @@ COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 COPY backend/*.py /app/backend/
-COPY backend/.env /app/backend/.env
+COPY backend/env_example.txt /app/backend/env_example.txt
+RUN cp /app/backend/env_example.txt /app/backend/.env
 
 RUN mkdir -p /app/backend/data /app/backend/cache /app/backend/logs
 

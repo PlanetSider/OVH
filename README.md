@@ -149,6 +149,7 @@ http://你的服务器IP:20000
 说明：
 - `ghcr.io/planetsider/ovh:beta` 对应 GitHub Actions 在 `main` 分支自动构建的镜像
 - 如果你发布了版本标签 `v*`，也可以使用对应版本标签或 `latest`
+- 镜像内会自带一份默认 `.env` 模板，生产环境仍建议通过容器环境变量显式覆盖关键配置
 
 ## 本地开发
 
