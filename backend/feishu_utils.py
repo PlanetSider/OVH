@@ -39,6 +39,13 @@ class FeishuClient:
             return True
         return hmac.compare_digest(verify_token, token or "")
 
+    def verify_app_id(self, app_id: str) -> bool:
+        cfg = self._cfg()
+        expected_app_id = cfg.get("feishuAppId") or ""
+        if not expected_app_id:
+            return True
+        return hmac.compare_digest(expected_app_id, app_id or "")
+
     def decrypt_event(self, encrypt_value: str) -> Dict[str, Any]:
         cfg = self._cfg()
         encrypt_key = cfg.get("feishuEncryptKey") or ""

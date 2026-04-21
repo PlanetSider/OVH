@@ -4234,8 +4234,11 @@ def feishu_events():
         return jsonify({"challenge": challenge})
 
     verify_token = body.get("token", "") or header.get("token", "")
-    if not feishu_client.verify_token(verify_token):
-        add_log("WARNING", "飞书事件 token 校验失败", "feishu")
+    app_id = body.get("app_id", "") or header.get("app_id", "")
+    token_valid = feishu_client.verify_token(verify_token)
+    app_id_valid = feishu_client.verify_app_id(app_id)
+    if not token_valid and not app_id_valid:
+        add_log("WARNING", f"飞书事件校验失败: token={verify_token or '-'}, app_id={app_id or '-'}", "feishu")
         return jsonify({"code": 1, "msg": "invalid token"}), 403
 
     event = body.get("event") or {}
@@ -4285,8 +4288,11 @@ def feishu_card_action():
 
     header = body.get("header") or {}
     verify_token = body.get("token", "") or header.get("token", "")
-    if verify_token and (not feishu_client.verify_token(verify_token)):
-        add_log("WARNING", "飞书卡片回调 token 校验失败", "feishu")
+    app_id = body.get("app_id", "") or header.get("app_id", "")
+    token_valid = feishu_client.verify_token(verify_token)
+    app_id_valid = feishu_client.verify_app_id(app_id)
+    if (verify_token or app_id) and (not token_valid and not app_id_valid):
+        add_log("WARNING", f"飞书卡片回调校验失败: token={verify_token or '-'}, app_id={app_id or '-'}", "feishu")
         return jsonify({"code": 1, "msg": "invalid token"}), 403
 
     open_id = extract_feishu_open_id(body)
