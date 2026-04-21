@@ -803,6 +803,15 @@ def set_server_alias(account_id, service_name, alias):
     save_server_aliases()
 
 
+def remove_server_alias(account_id, service_name):
+    key = f"{account_id}:{service_name}"
+    existed = key in server_aliases
+    if existed:
+        server_aliases.pop(key, None)
+        save_server_aliases()
+    return existed
+
+
 def get_bot_pending_action(channel: str, user_key: str):
     return bot_pending_actions.get(f"{channel}:{user_key}") or {}
 
@@ -854,6 +863,7 @@ def build_bot_help_message():
         "/switch - 依次循环切换 API 账户\n"
         "/switch <邮箱> - 切换到指定邮箱对应的 API 账户\n\n"
         "/alias - 为所有API账户下服务器绑定别名\n\n"
+        "/unalias - 移除所有API账户下服务器别名\n\n"
         "下单命令：\n"
         "24sk202\n"
         "24sk202 rbx\n"
@@ -883,33 +893,96 @@ def build_status_message(account_id):
                 try:
                     server_info = client.get(f'/dedicated/server/{service_name}')
                     service_info = client.get(f'/dedicated/server/{service_name}/serviceInfos')
+                    hardware_info = client.get(f'/dedicated/server/{service_name}/specifications/hardware')
+
+                    memory_size = hardware_info.get('memorySize') or {}
+                    memory_text = 'N/A'
+                    if memory_size.get('value'):
+                        memory_text = f"{memory_size.get('value')} {memory_size.get('unit', '')}".strip()
+
+                    disk_groups = hardware_info.get('diskGroups') or []
+                    storage_parts = []
+                    for group in disk_groups:
+                        try:
+                            number = group.get('numberOfDisks') or group.get('disks', [{}])[0].get('number') or 0
+                            disk_size = group.get('diskSize') or {}
+                            size_value = disk_size.get('value')
+                            size_unit = disk_size.get('unit', '')
+                            disk_type = group.get('diskType') or group.get('description') or ''
+                            if number and size_value:
+                                storage_parts.append(f"{number}x{size_value}{size_unit} {disk_type}".strip())
+                        except Exception:
+                            continue
+                    storage_text = ' / '.join(storage_parts) if storage_parts else 'N/A'
+
                     servers.append({
                         'serviceName': service_name,
                         'name': server_info.get('name', service_name),
+                        'alias': get_server_alias(account_id, service_name, server_info.get('name', service_name)),
+                        'commercialRange': server_info.get('commercialRange', 'N/A'),
+                        'cpu': hardware_info.get('processorName', 'N/A'),
+                        'memory': memory_text,
+                        'storage': storage_text,
+                        'datacenter': server_info.get('datacenter', 'N/A'),
+                        'expiration': service_info.get('expiration', '') or 'N/A',
+                        'renewalType': service_info.get('renew', {}).get('automatic', False),
                         'state': server_info.get('state', service_info.get('status', 'unknown'))
                     })
                 except Exception:
-                    servers.append({'serviceName': service_name, 'name': service_name, 'state': 'unknown'})
+                    servers.append({
+                        'serviceName': service_name,
+                        'name': service_name,
+                        'alias': get_server_alias(account_id, service_name, service_name),
+                        'commercialRange': 'N/A',
+                        'cpu': 'N/A',
+                        'memory': 'N/A',
+                        'storage': 'N/A',
+                        'datacenter': 'N/A',
+                        'expiration': 'N/A',
+                        'renewalType': False,
+                        'state': 'unknown'
+                    })
         except Exception as e:
             add_log('WARNING', f"机器人命令获取服务器列表失败: {str(e)}", 'bot')
     monitor_count = len([s for s in get_monitor_for_account(account_id).subscriptions if s.get('planCode')])
     queue_items = [item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']]
     lines = [
-        f"当前账户邮箱: {email}",
-        f"客户代码: {customer_code}",
-        f"监控任务数量: {monitor_count}",
-        f"抢购任务数量: {len(queue_items)}",
+        "账户概览",
+        f"- 邮箱: {email}",
+        f"- 客户代码: {customer_code}",
+        f"- 监控任务数量: {monitor_count}",
+        f"- 抢购任务数量: {len(queue_items)}",
         "",
-        "服务器列表:"
+        f"服务器列表（{len(servers)}台）"
     ]
     if servers:
-        for server in servers:
+        for index, server in enumerate(servers, 1):
             service_name = server.get('serviceName') or server.get('name') or '未知服务器'
-            display_name = get_server_alias(account_id, service_name, server.get('name') or service_name)
-            lines.append(f"- {display_name} | 型号: {service_name} | 内存: N/A | 硬盘: N/A | 状态: {server.get('state')}")
+            display_name = server.get('alias') or get_server_alias(account_id, service_name, server.get('name') or service_name)
+            renewal_text = '自动续费' if server.get('renewalType') else '手动续费'
+            expiration_raw = server.get('expiration', 'N/A')
+            expiration_text = expiration_raw
+            if expiration_raw and expiration_raw != 'N/A':
+                try:
+                    expiration_text = datetime.fromisoformat(str(expiration_raw).replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    expiration_text = str(expiration_raw)
+            lines.extend([
+                f"[{index}] {display_name}",
+                f"  服务名   : {service_name}",
+                f"  型号     : {server.get('commercialRange', 'N/A')}",
+                f"  CPU      : {server.get('cpu', 'N/A')}",
+                f"  内存     : {server.get('memory', 'N/A')}",
+                f"  硬盘     : {server.get('storage', 'N/A')}",
+                f"  数据中心 : {server.get('datacenter', 'N/A')}",
+                f"  到期时间 : {expiration_text}",
+                f"  服务器状态: {server.get('state', 'unknown')}",
+                f"  续费状态 : {renewal_text}",
+                ""
+            ])
     else:
         lines.append("- 当前账户下暂无服务器")
-    return '\n'.join(lines)
+    return '\n'.join(lines).strip()
 
 
 def get_server_plan_meta(plan_code):
@@ -968,18 +1041,163 @@ def build_alias_selection_message(servers):
     return '\n'.join(lines)
 
 
+def build_alias_account_message():
+    return "请选择要管理别名的 API 账户："
+
+
+def build_unalias_account_message():
+    return "请选择要移除别名的 API 账户："
+
+
+def build_alias_account_buttons(channel: str, user_key: str):
+    buttons = []
+    for account_id, acc in accounts.items():
+        label = (acc.get('alias') or account_id)
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({
+                    'a': 'alias_account',
+                    'accountId': account_id,
+                    'userKey': user_key
+                }, ensure_ascii=False, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {
+                    'action': 'alias_account',
+                    'accountId': account_id,
+                    'userKey': user_key
+                }
+            })
+    return buttons
+
+
+def build_unalias_account_buttons(channel: str, user_key: str):
+    buttons = []
+    for account_id, acc in accounts.items():
+        label = (acc.get('alias') or account_id)
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({
+                    'a': 'unalias_account',
+                    'accountId': account_id,
+                    'userKey': user_key
+                }, ensure_ascii=False, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {
+                    'action': 'unalias_account',
+                    'accountId': account_id,
+                    'userKey': user_key
+                }
+            })
+    return buttons
+
+
+def build_alias_server_buttons(channel: str, user_key: str, account_id: str, servers: list):
+    buttons = []
+    for server in servers:
+        label = f"{server.get('displayName')}"
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({
+                    'a': 'alias_server',
+                    'accountId': account_id,
+                    'serviceName': server.get('serviceName'),
+                    'userKey': user_key
+                }, ensure_ascii=False, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {
+                    'action': 'alias_server',
+                    'accountId': account_id,
+                    'serviceName': server.get('serviceName'),
+                    'userKey': user_key
+                }
+            })
+    return buttons
+
+
+def build_unalias_server_buttons(channel: str, user_key: str, account_id: str, servers: list):
+    buttons = []
+    for server in servers:
+        label = f"{server.get('displayName')}"
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({
+                    'a': 'unalias_server',
+                    'accountId': account_id,
+                    'serviceName': server.get('serviceName'),
+                    'userKey': user_key
+                }, ensure_ascii=False, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {
+                    'action': 'unalias_server',
+                    'accountId': account_id,
+                    'serviceName': server.get('serviceName'),
+                    'userKey': user_key
+                }
+            })
+    return buttons
+
+
+def build_alias_server_message(account_alias):
+    return f"已选择账户：{account_alias}\n请选择要绑定别名的服务器："
+
+
+def build_unalias_server_message(account_alias):
+    return f"已选择账户：{account_alias}\n请选择要移除别名的服务器："
+
+
+def build_tg_inline_keyboard(buttons, row_size=2):
+    inline_keyboard = []
+    row = []
+    for idx, button in enumerate(buttons):
+        row.append(button)
+        if len(row) >= row_size or idx == len(buttons) - 1:
+            inline_keyboard.append(row)
+            row = []
+    return {'inline_keyboard': inline_keyboard}
+
+
 def build_monitor_message(account_id):
     if not account_id or account_id not in accounts:
         return "当前没有可用的 API 账户。"
     subscriptions = get_monitor_for_account(account_id).subscriptions
     if not subscriptions:
         return "当前账户没有监控任务。"
-    lines = [f"当前监控任务（{len(subscriptions)}个）:"]
-    for sub in subscriptions:
+    lines = [f"当前监控任务（{len(subscriptions)}个）"]
+    for index, sub in enumerate(subscriptions, 1):
         dcs = sub.get('datacenters') or []
         dc_text = ','.join([dc.upper() for dc in dcs]) if dcs else '全部机房'
         plan_summary = format_plan_summary(sub.get('planCode'))
-        lines.append(f"- {plan_summary} | 机房: {dc_text} | 自动下单: {'是' if sub.get('autoOrder') else '否'}")
+        lines.extend([
+            f"[{index}] {plan_summary}",
+            f"  机房     : {dc_text}",
+            f"  自动下单 : {'是' if sub.get('autoOrder') else '否'}",
+            f"  缺货通知 : {'是' if sub.get('notifyUnavailable') else '否'}",
+            ""
+        ])
     return '\n'.join(lines)
 
 
@@ -989,12 +1207,19 @@ def build_autobuy_message(account_id):
     items = [item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']]
     if not items:
         return "当前账户没有抢购任务。"
-    lines = [f"当前抢购任务（{len(items)}个）:"]
-    for item in items:
+    lines = [f"当前抢购任务（{len(items)}个）"]
+    for index, item in enumerate(items, 1):
         dcs = item.get('datacenters') or ([item.get('datacenter')] if item.get('datacenter') else [])
         dc_text = ' > '.join([str(dc).upper() for dc in dcs if dc]) if dcs else '全部机房'
         plan_summary = format_plan_summary(item.get('planCode'))
-        lines.append(f"- {plan_summary} | 机房: {dc_text} | 状态: {item.get('status')} | 数量: {item.get('quantity', 1)} | 自动支付: {'是' if item.get('auto_pay') else '否'}")
+        lines.extend([
+            f"[{index}] {plan_summary}",
+            f"  机房     : {dc_text}",
+            f"  状态     : {item.get('status')}",
+            f"  数量     : {item.get('quantity', 1)}",
+            f"  自动支付 : {'是' if item.get('auto_pay') else '否'}",
+            ""
+        ])
     return '\n'.join(lines)
 
 
@@ -1038,10 +1263,10 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
         try:
             choice = int(normalized)
         except Exception:
-            return "请输入有效编号。"
+            return {"text": "请输入有效编号。"}
         servers = pending.get('servers') or []
         if choice < 1 or choice > len(servers):
-            return "编号超出范围，请重新输入。"
+            return {"text": "编号超出范围，请重新输入。"}
         server = servers[choice - 1]
         set_bot_pending_action(channel, user_key, {
             'type': 'alias_input',
@@ -1049,46 +1274,61 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
             'serviceName': server.get('serviceName'),
             'displayName': server.get('displayName')
         })
-        return f"已选择服务器：{server.get('displayName')} ({server.get('serviceName')})\n请直接回复新的别名。"
+        return {"text": f"已选择服务器：{server.get('displayName')} ({server.get('serviceName')})\n请直接回复新的别名。"}
 
     if pending.get('type') == 'alias_input':
         alias = normalized.strip()
         if not alias:
-            return "别名不能为空，请重新输入。"
+            return {"text": "别名不能为空，请重新输入。"}
         account_id = pending.get('accountId')
         service_name = pending.get('serviceName')
         set_server_alias(account_id, service_name, alias)
         clear_bot_pending_action(channel, user_key)
-        return f"已为服务器 {service_name} 绑定别名：{alias}"
+        return {"text": f"已为服务器 {service_name} 绑定别名：{alias}"}
 
     if lower in ['/help', 'help']:
-        return build_bot_help_message()
+        return {"text": build_bot_help_message()}
     if lower == '/alias':
-        servers = list_all_account_servers()
-        set_bot_pending_action(channel, user_key, {
-            'type': 'alias_select',
-            'servers': servers
-        })
-        return build_alias_selection_message(servers)
+        account_buttons = build_alias_account_buttons(channel, user_key)
+        if channel == 'telegram':
+            return {
+                'text': build_alias_account_message(),
+                'reply_markup': build_tg_inline_keyboard(account_buttons, row_size=2)
+            }
+        return {
+            'text': build_alias_account_message(),
+            'card': build_feishu_order_card('服务器别名绑定', build_alias_account_message(), account_buttons)
+        }
+    if lower == '/unalias':
+        account_buttons = build_unalias_account_buttons(channel, user_key)
+        if channel == 'telegram':
+            return {
+                'text': build_unalias_account_message(),
+                'reply_markup': build_tg_inline_keyboard(account_buttons, row_size=2)
+            }
+        return {
+            'text': build_unalias_account_message(),
+            'card': build_feishu_order_card('服务器别名移除', build_unalias_account_message(), account_buttons)
+        }
     if lower == '/status':
-        return build_status_message(effective_account)
+        return {"text": build_status_message(effective_account)}
     if lower == '/monitor':
-        return build_monitor_message(effective_account)
+        return {"text": build_monitor_message(effective_account)}
     if lower == '/autobuy':
-        return build_autobuy_message(effective_account)
+        return {"text": build_autobuy_message(effective_account)}
     if lower.startswith('/switch'):
         parts = normalized.split(maxsplit=1)
         email = parts[1].strip() if len(parts) > 1 else None
         ok, message = switch_bot_account(channel, user_key, email)
         if not ok:
-            return message
+            return {"text": message}
         current_account = get_effective_bot_account(channel, user_key)
-        return message + "\n\n" + build_status_message(current_account)
+        return {"text": message + "\n\n" + build_status_message(current_account)}
     parsed = parse_purchase_command(normalized)
     if not parsed:
-        return "❌ 消息格式不正确\n\n" + build_bot_help_message()
+        return {"text": "❌ 消息格式不正确\n\n" + build_bot_help_message()}
     if parsed.get('error'):
-        return f"❌ {parsed['error']}"
+        return {"text": f"❌ {parsed['error']}"}
     ok, result_msg = execute_purchase_command(
         parsed['planCode'],
         parsed.get('datacenter'),
@@ -1097,8 +1337,8 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
         account_id=effective_account
     )
     if result_msg.startswith(('✅', '❌')):
-        return result_msg
-    return ("✅ " if ok else "❌ ") + result_msg
+        return {"text": result_msg}
+    return {"text": (("✅ " if ok else "❌ ") + result_msg)}
 
 
 def send_feishu_text(message: str, open_id=None, account_id=None):
@@ -4334,6 +4574,72 @@ def telegram_webhook():
                 if cbid:
                     processed_callback_ids.add(cbid)
                 return jsonify({"ok": True})
+
+            elif action == 'alias_account':
+                account_id = callback_data_obj.get('accountId')
+                acc = accounts.get(account_id) or {}
+                servers = [s for s in list_all_account_servers() if s.get('accountId') == account_id]
+                set_bot_pending_action('telegram', str(user_id), {
+                    'type': 'alias_select',
+                    'servers': servers
+                })
+                buttons = build_alias_server_buttons('telegram', str(user_id), account_id, servers)
+                if tg_token:
+                    send_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+                    _tg_post(send_url, {
+                        "chat_id": chat_id,
+                        "text": build_alias_server_message(acc.get('alias') or account_id),
+                        "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'unalias_account':
+                account_id = callback_data_obj.get('accountId')
+                acc = accounts.get(account_id) or {}
+                servers = [s for s in list_all_account_servers() if s.get('accountId') == account_id and server_aliases.get(f"{account_id}:{s.get('serviceName')}")]
+                buttons = build_unalias_server_buttons('telegram', str(user_id), account_id, servers)
+                if tg_token:
+                    send_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+                    _tg_post(send_url, {
+                        "chat_id": chat_id,
+                        "text": build_unalias_server_message(acc.get('alias') or account_id),
+                        "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'alias_server':
+                account_id = callback_data_obj.get('accountId')
+                service_name = callback_data_obj.get('serviceName')
+                display_name = get_server_alias(account_id, service_name, service_name)
+                set_bot_pending_action('telegram', str(user_id), {
+                    'type': 'alias_input',
+                    'accountId': account_id,
+                    'serviceName': service_name,
+                    'displayName': display_name
+                })
+                if tg_token:
+                    send_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+                    _tg_post(send_url, {
+                        "chat_id": chat_id,
+                        "text": f"已选择服务器：{display_name} ({service_name})\n请直接回复新的别名。",
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'unalias_server':
+                account_id = callback_data_obj.get('accountId')
+                service_name = callback_data_obj.get('serviceName')
+                existed = remove_server_alias(account_id, service_name)
+                if tg_token:
+                    send_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+                    _tg_post(send_url, {
+                        "chat_id": chat_id,
+                        "text": ("已移除服务器别名。" if existed else "该服务器当前没有别名。"),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
             
             elif action == "owc":
                 message_uuid = callback_data_obj.get("u") or callback_data_obj.get("uuid")
@@ -4404,11 +4710,12 @@ def telegram_webhook():
             tg_token = config.get("tgToken")
             
             add_log("INFO", f"收到Telegram普通消息: user_id={user_id}, text={text[:100]}", "telegram")
-            response_text = dispatch_bot_command('telegram', str(user_id), text)
-            if tg_token and chat_id and response_text:
+            response_payload = dispatch_bot_command('telegram', str(user_id), text)
+            if tg_token and chat_id and response_payload:
                 requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
                     "chat_id": chat_id,
-                    "text": response_text
+                    "text": response_payload.get('text', ''),
+                    **({"reply_markup": response_payload.get('reply_markup')} if response_payload.get('reply_markup') else {})
                 }, timeout=5)
             
             return jsonify({"ok": True})
@@ -4479,9 +4786,12 @@ def feishu_events():
     if not text:
         return jsonify({"code": 0})
 
-    response_text = dispatch_bot_command('feishu', sender or 'anonymous', text)
-    if response_text:
-        send_feishu_text(response_text, open_id=sender)
+    response_payload = dispatch_bot_command('feishu', sender or 'anonymous', text)
+    if response_payload:
+        if response_payload.get('card'):
+            send_feishu_card(response_payload.get('card'), open_id=sender)
+        elif response_payload.get('text'):
+            send_feishu_text(response_payload.get('text'), open_id=sender)
     return jsonify({"code": 0})
 
 
@@ -4578,6 +4888,48 @@ def feishu_card_action():
         save_data()
         update_stats()
         return jsonify({"toast": {"type": "success", "content": "已添加到抢购队列"}})
+
+    if action_name == 'alias_account':
+        account_id = action.get('accountId')
+        acc = accounts.get(account_id) or {}
+        servers = [s for s in list_all_account_servers() if s.get('accountId') == account_id]
+        set_bot_pending_action('feishu', open_id or 'anonymous', {
+            'type': 'alias_select',
+            'servers': servers
+        })
+        buttons = build_alias_server_buttons('feishu', open_id or 'anonymous', account_id, servers)
+        card = build_feishu_order_card('选择服务器', build_alias_server_message(acc.get('alias') or account_id), buttons)
+        send_feishu_card(card, open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择服务器"}})
+
+    if action_name == 'unalias_account':
+        account_id = action.get('accountId')
+        acc = accounts.get(account_id) or {}
+        servers = [s for s in list_all_account_servers() if s.get('accountId') == account_id and server_aliases.get(f"{account_id}:{s.get('serviceName')}")]
+        buttons = build_unalias_server_buttons('feishu', open_id or 'anonymous', account_id, servers)
+        card = build_feishu_order_card('移除服务器别名', build_unalias_server_message(acc.get('alias') or account_id), buttons)
+        send_feishu_card(card, open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择服务器"}})
+
+    if action_name == 'alias_server':
+        account_id = action.get('accountId')
+        service_name = action.get('serviceName')
+        acc = accounts.get(account_id) or {}
+        display_name = get_server_alias(account_id, service_name, service_name)
+        set_bot_pending_action('feishu', open_id or 'anonymous', {
+            'type': 'alias_input',
+            'accountId': account_id,
+            'serviceName': service_name,
+            'displayName': display_name
+        })
+        send_feishu_text(f"已选择账户：{acc.get('alias') or account_id}\n已选择服务器：{display_name} ({service_name})\n请直接回复新的别名。", open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请直接回复新的别名"}})
+
+    if action_name == 'unalias_server':
+        account_id = action.get('accountId')
+        service_name = action.get('serviceName')
+        existed = remove_server_alias(account_id, service_name)
+        return jsonify({"toast": {"type": "success", "content": ("已移除服务器别名" if existed else "该服务器当前没有别名")}})
 
     if action_name == "order_with_account":
         message_uuid = action.get("uuid")
