@@ -1,0 +1,59 @@
+{
+  "app": {
+    "name": "OVH Phantom Sniper",
+    "description": "OVH server monitoring, queue ordering and bot interaction",
+    "icon_key": ""
+  },
+  "app_type": "custom",
+  "version": "1.0.0",
+  "bot": {
+    "enable": true,
+    "name": "OVH Phantom Sniper",
+    "description": "Private chat bot for OVH notifications and ordering"
+  },
+  "permissions": {
+    "scopes": [
+      "im:message",
+      "im:message.p2p_msg:readonly",
+      "im:message.group_at_msg:readonly"
+    ]
+  },
+  "event_callbacks": {
+    "verification_token": "__FEISHU_VERIFICATION_TOKEN__",
+    "encrypt_key": "__FEISHU_ENCRYPT_KEY__",
+    "request_url": "https://__YOUR_DOMAIN__/api/feishu/events",
+    "events": [
+      "im.message.receive_v1"
+    ]
+  },
+  "interact_card": {
+    "enable": true,
+    "request_url": "https://__YOUR_DOMAIN__/api/feishu/card-action"
+  },
+  "availability": {
+    "enable": true,
+    "is_visible": true,
+    "scopes": {
+      "tenant": true,
+      "user_ids": []
+    }
+  },
+  "notes": {
+    "replace": [
+      "__YOUR_DOMAIN__",
+      "__FEISHU_VERIFICATION_TOKEN__",
+      "__FEISHU_ENCRYPT_KEY__"
+    ],
+    "project_mapping": {
+      "event_request_url": "/api/feishu/events",
+      "card_action_url": "/api/feishu/card-action"
+    },
+    "required_project_settings": [
+      "feishuEnabled",
+      "feishuAppId",
+      "feishuAppSecret",
+      "feishuVerificationToken",
+      "feishuEncryptKey"
+    ]
+  }
+}

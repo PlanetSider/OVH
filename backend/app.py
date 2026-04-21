@@ -685,6 +685,43 @@ def bind_feishu_user(open_id, user_name="", account_id=None):
     add_log("INFO", f"已绑定飞书用户: account={aid}, open_id={open_id}", "feishu")
 
 
+def unwrap_feishu_payload(body):
+    if not isinstance(body, dict):
+        return {}
+    if body.get("encrypt"):
+        try:
+            return feishu_client.decrypt_event(body.get("encrypt"))
+        except Exception as e:
+            add_log("ERROR", f"飞书事件解密失败: {str(e)}", "feishu")
+            return {}
+    return body
+
+
+def extract_feishu_open_id(payload):
+    if not isinstance(payload, dict):
+        return ""
+    operator = payload.get("operator") or {}
+    event = payload.get("event") or {}
+    sender = event.get("sender") or {}
+    sender_id = sender.get("sender_id") or {}
+    return (
+        payload.get("open_id")
+        or operator.get("open_id")
+        or ((operator.get("operator_id") or {}).get("open_id") if isinstance(operator.get("operator_id"), dict) else "")
+        or sender_id.get("open_id")
+        or ""
+    )
+
+
+def extract_feishu_user_name(payload):
+    if not isinstance(payload, dict):
+        return ""
+    event = payload.get("event") or {}
+    sender = event.get("sender") or {}
+    sender_id = sender.get("sender_id") or {}
+    return sender_id.get("user_id") or payload.get("open_id") or ""
+
+
 def send_feishu_text(message: str, open_id=None, account_id=None):
     if not feishu_client.is_enabled():
         add_log("WARNING", "飞书消息未发送: 飞书应用未启用或配置不完整", "feishu")
@@ -4189,6 +4226,7 @@ def test_notification():
 def feishu_events():
     raw_body = request.get_data() or b''
     body = request.get_json(silent=True) or {}
+    body = unwrap_feishu_payload(body)
     header = body.get("header") or {}
 
     challenge = body.get("challenge")
@@ -4201,8 +4239,8 @@ def feishu_events():
         return jsonify({"code": 1, "msg": "invalid token"}), 403
 
     event = body.get("event") or {}
-    sender = (((event.get("sender") or {}).get("sender_id") or {}).get("open_id")) or ""
-    sender_name = ((event.get("sender") or {}).get("sender_id") or {}).get("user_id") or ""
+    sender = extract_feishu_open_id(body)
+    sender_name = extract_feishu_user_name(body)
     message = event.get("message") or {}
     content_str = message.get("content") or "{}"
     try:
@@ -4240,13 +4278,24 @@ def feishu_events():
 @app.route('/api/feishu/card-action', methods=['POST'])
 def feishu_card_action():
     body = request.get_json(silent=True) or {}
+    body = unwrap_feishu_payload(body)
     challenge = body.get("challenge")
     if challenge:
         return jsonify({"challenge": challenge})
 
-    open_id = (((body.get("open_id") or "") or ((body.get("operator") or {}).get("open_id") if isinstance(body.get("operator"), dict) else ""))) or ""
-    action = (body.get("action") or {}).get("value") or {}
+    header = body.get("header") or {}
+    verify_token = body.get("token", "") or header.get("token", "")
+    if verify_token and (not feishu_client.verify_token(verify_token)):
+        add_log("WARNING", "飞书卡片回调 token 校验失败", "feishu")
+        return jsonify({"code": 1, "msg": "invalid token"}), 403
+
+    open_id = extract_feishu_open_id(body)
+    action_obj = body.get("action") or {}
+    action = action_obj.get("value") or {}
+    if not action and isinstance(action_obj.get("form_value"), dict):
+        action = action_obj.get("form_value") or {}
     action_name = action.get("action")
+    add_log("INFO", f"收到飞书卡片回调: action={action_name or '-'}, open_id={open_id or '-'}", "feishu")
     if open_id:
         bind_feishu_user(open_id)
 

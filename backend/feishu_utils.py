@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import time
+from Crypto.Cipher import AES
 from typing import Any, Callable, Dict, Optional
 
 import requests
@@ -37,6 +38,23 @@ class FeishuClient:
         if not verify_token:
             return True
         return hmac.compare_digest(verify_token, token or "")
+
+    def decrypt_event(self, encrypt_value: str) -> Dict[str, Any]:
+        cfg = self._cfg()
+        encrypt_key = cfg.get("feishuEncryptKey") or ""
+        if not encrypt_key or not encrypt_value:
+            return {}
+        key = hashlib.sha256(encrypt_key.encode("utf-8")).digest()
+        raw = base64.b64decode(encrypt_value)
+        iv = key[:16]
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        decrypted = cipher.decrypt(raw)
+        pad_len = decrypted[-1]
+        if isinstance(pad_len, str):
+            pad_len = ord(pad_len)
+        decrypted = decrypted[:-pad_len]
+        text = decrypted.decode("utf-8")
+        return json.loads(text)
 
     def _fetch_tenant_access_token(self) -> str:
         cfg = self._cfg()
