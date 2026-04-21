@@ -1,7 +1,7 @@
 version: "3.8"
 services:
   ovh-app:
-    image: iniwex/ovh:latest
+    image: ghcr.io/planetsider/ovh:beta
     container_name: OVH
     pull_policy: always
     ports:
