@@ -35,6 +35,29 @@ services:
 - `ENABLE_API_KEY_AUTH`：是否启用 API 密钥校验（生产环境建议 `true`）
 - `TZ`：容器时区，已在镜像中默认设置为 `Asia/Shanghai` (可选，若需自定义时区请指定)
 
+## GitHub 自动构建 Docker
+- 仓库已包含 GitHub Actions 工作流：`.github/workflows/dockerhub.yml`
+- 触发条件：
+  - 推送到 `main`
+  - 推送标签 `v*`
+  - 手动触发 `workflow_dispatch`
+- 构建文件：`Dockerfile.hub`
+- 推送目标：`docker.io/<DOCKERHUB_USERNAME>/ovh`
+
+### 需要配置的 GitHub Secrets
+- `DOCKERHUB_USERNAME`：Docker Hub 用户名
+- `DOCKERHUB_TOKEN`：Docker Hub Access Token
+
+### 默认标签策略
+- 推送到 `main`：发布 `beta` 和 `sha-<commit>`
+- 推送 `v*` 标签：发布对应 tag、`latest` 和 `sha-<commit>`
+
+### 使用步骤
+1. 在 GitHub 仓库中打开 `Settings` -> `Secrets and variables` -> `Actions`
+2. 新增 `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`
+3. 推送代码到 `main`，或创建 `v*` 标签
+4. 在 GitHub 的 `Actions` 页面查看构建结果
+
 
 ## 许可证
 MIT License
