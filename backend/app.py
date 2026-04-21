@@ -668,7 +668,7 @@ def _tg_post(url, payload, timeout=5):
 
 def get_bound_feishu_user(account_id=None):
     aid = account_id or get_account_id_from_request() or "default"
-    return feishu_users.get(aid) or {}
+    return feishu_users.get(aid) or feishu_users.get("default") or {}
 
 
 def bind_feishu_user(open_id, user_name="", account_id=None):
@@ -4189,12 +4189,15 @@ def test_notification():
 def feishu_events():
     raw_body = request.get_data() or b''
     body = request.get_json(silent=True) or {}
+    header = body.get("header") or {}
 
     challenge = body.get("challenge")
     if challenge:
         return jsonify({"challenge": challenge})
 
-    if not feishu_client.verify_token(body.get("token", "")):
+    verify_token = body.get("token", "") or header.get("token", "")
+    if not feishu_client.verify_token(verify_token):
+        add_log("WARNING", "飞书事件 token 校验失败", "feishu")
         return jsonify({"code": 1, "msg": "invalid token"}), 403
 
     event = body.get("event") or {}
@@ -4207,6 +4210,7 @@ def feishu_events():
     except Exception:
         content = {}
     text = (content.get("text") or "").strip()
+    add_log("INFO", f"收到飞书事件: event_type={header.get('event_type')}, open_id={sender or '-'}, text={text[:100]}", "feishu")
     if sender:
         bind_feishu_user(sender, sender_name)
     if not text:
@@ -4387,10 +4391,11 @@ def feishu_card_action():
 @app.route('/api/feishu/binding', methods=['GET'])
 def get_feishu_binding():
     account_id = get_account_id_from_request() or "default"
-    binding = feishu_users.get(account_id) or {}
+    binding = feishu_users.get(account_id) or feishu_users.get("default") or {}
     return jsonify({
         "success": True,
         "accountId": account_id,
+        "source": "account" if feishu_users.get(account_id) else ("default" if feishu_users.get("default") else None),
         "binding": binding,
         "bound": bool(binding.get("open_id"))
     })
