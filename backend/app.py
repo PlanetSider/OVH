@@ -96,6 +96,8 @@ CONFIG_SNIPER_FILE = os.path.join(DATA_DIR, "config_sniper_tasks.json")
 VPS_SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "vps_subscriptions.json")
 FEISHU_USERS_FILE = os.path.join(DATA_DIR, "feishu_users.json")
 BOT_USER_SELECTIONS_FILE = os.path.join(DATA_DIR, "bot_user_account_selections.json")
+SERVER_ALIASES_FILE = os.path.join(DATA_DIR, "server_aliases.json")
+BOT_PENDING_ACTIONS_FILE = os.path.join(DATA_DIR, "bot_pending_actions.json")
 
 config = {
     "tgToken": "",
@@ -141,6 +143,8 @@ monitor = None
 monitors = {}
 feishu_users = {}
 bot_user_account_selections = {}
+server_aliases = {}
+bot_pending_actions = {}
 
 # 全局删除任务ID集合（用于立即停止后台线程处理）
 deleted_task_ids = set()
@@ -176,7 +180,7 @@ feishu_client = FeishuClient(get_feishu_config, lambda level, message, source="f
 
 # Load data from files if they exist
 def load_data():
-    global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts, feishu_users, bot_user_account_selections
+    global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts, feishu_users, bot_user_account_selections, server_aliases, bot_pending_actions
     
     if os.path.exists(CONFIG_FILE):
         try:
@@ -428,6 +432,30 @@ def load_data():
                     print(f"警告: {BOT_USER_SELECTIONS_FILE}文件为空")
         except json.JSONDecodeError:
             print(f"警告: {BOT_USER_SELECTIONS_FILE}文件格式不正确")
+
+    if os.path.exists(SERVER_ALIASES_FILE):
+        try:
+            with open(SERVER_ALIASES_FILE, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    server_aliases = data if isinstance(data, dict) else {}
+                else:
+                    print(f"警告: {SERVER_ALIASES_FILE}文件为空")
+        except json.JSONDecodeError:
+            print(f"警告: {SERVER_ALIASES_FILE}文件格式不正确")
+
+    if os.path.exists(BOT_PENDING_ACTIONS_FILE):
+        try:
+            with open(BOT_PENDING_ACTIONS_FILE, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    bot_pending_actions = data if isinstance(data, dict) else {}
+                else:
+                    print(f"警告: {BOT_PENDING_ACTIONS_FILE}文件为空")
+        except json.JSONDecodeError:
+            print(f"警告: {BOT_PENDING_ACTIONS_FILE}文件格式不正确")
     
     # Update stats
     update_stats()
@@ -452,6 +480,10 @@ def save_data(do_flush=True):
             json.dump(feishu_users, f, ensure_ascii=False, indent=2)
         with open(BOT_USER_SELECTIONS_FILE, 'w', encoding='utf-8') as f:
             json.dump(bot_user_account_selections, f, ensure_ascii=False, indent=2)
+        with open(SERVER_ALIASES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(server_aliases, f, ensure_ascii=False, indent=2)
+        with open(BOT_PENDING_ACTIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(bot_pending_actions, f, ensure_ascii=False, indent=2)
         try:
             acc_queue_map = {}
             for item in queue:
@@ -746,6 +778,45 @@ def save_bot_user_account_selections():
         add_log("WARNING", f"保存机器人账户切换状态失败: {str(e)}", "bot")
 
 
+def save_server_aliases():
+    try:
+        with open(SERVER_ALIASES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(server_aliases, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        add_log("WARNING", f"保存服务器别名失败: {str(e)}", "bot")
+
+
+def save_bot_pending_actions():
+    try:
+        with open(BOT_PENDING_ACTIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(bot_pending_actions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        add_log("WARNING", f"保存机器人待处理动作失败: {str(e)}", "bot")
+
+
+def get_server_alias(account_id, service_name, fallback=None):
+    return server_aliases.get(f"{account_id}:{service_name}") or fallback or service_name
+
+
+def set_server_alias(account_id, service_name, alias):
+    server_aliases[f"{account_id}:{service_name}"] = alias
+    save_server_aliases()
+
+
+def get_bot_pending_action(channel: str, user_key: str):
+    return bot_pending_actions.get(f"{channel}:{user_key}") or {}
+
+
+def set_bot_pending_action(channel: str, user_key: str, payload: dict):
+    bot_pending_actions[f"{channel}:{user_key}"] = payload
+    save_bot_pending_actions()
+
+
+def clear_bot_pending_action(channel: str, user_key: str):
+    bot_pending_actions.pop(f"{channel}:{user_key}", None)
+    save_bot_pending_actions()
+
+
 def get_bot_selected_account(channel: str, user_key: str):
     item = bot_user_account_selections.get(f"{channel}:{user_key}") or {}
     account_id = item.get("accountId")
@@ -782,6 +853,7 @@ def build_bot_help_message():
         "/autobuy - 查看当前抢购任务\n"
         "/switch - 依次循环切换 API 账户\n"
         "/switch <邮箱> - 切换到指定邮箱对应的 API 账户\n\n"
+        "/alias - 为所有API账户下服务器绑定别名\n\n"
         "下单命令：\n"
         "24sk202\n"
         "24sk202 rbx\n"
@@ -812,11 +884,12 @@ def build_status_message(account_id):
                     server_info = client.get(f'/dedicated/server/{service_name}')
                     service_info = client.get(f'/dedicated/server/{service_name}/serviceInfos')
                     servers.append({
+                        'serviceName': service_name,
                         'name': server_info.get('name', service_name),
                         'state': server_info.get('state', service_info.get('status', 'unknown'))
                     })
                 except Exception:
-                    servers.append({'name': service_name, 'state': 'unknown'})
+                    servers.append({'serviceName': service_name, 'name': service_name, 'state': 'unknown'})
         except Exception as e:
             add_log('WARNING', f"机器人命令获取服务器列表失败: {str(e)}", 'bot')
     monitor_count = len([s for s in get_monitor_for_account(account_id).subscriptions if s.get('planCode')])
@@ -831,7 +904,9 @@ def build_status_message(account_id):
     ]
     if servers:
         for server in servers:
-            lines.append(f"- {server.get('name')} | 状态: {server.get('state')}")
+            service_name = server.get('serviceName') or server.get('name') or '未知服务器'
+            display_name = get_server_alias(account_id, service_name, server.get('name') or service_name)
+            lines.append(f"- {display_name} | 型号: {service_name} | 内存: N/A | 硬盘: N/A | 状态: {server.get('state')}")
     else:
         lines.append("- 当前账户下暂无服务器")
     return '\n'.join(lines)
@@ -857,6 +932,40 @@ def get_server_plan_meta(plan_code):
 def format_plan_summary(plan_code):
     meta = get_server_plan_meta(plan_code)
     return f"{meta['name']} | 型号: {plan_code} | 内存: {meta['memory']} | 硬盘: {meta['storage']}"
+
+
+def list_all_account_servers():
+    result = []
+    for account_id, acc in accounts.items():
+        client = get_ovh_client(account_id)
+        if not client:
+            continue
+        try:
+            service_names = client.get('/dedicated/server')
+            for service_name in service_names[:50]:
+                try:
+                    server_info = client.get(f'/dedicated/server/{service_name}')
+                    display_name = get_server_alias(account_id, service_name, server_info.get('name', service_name))
+                except Exception:
+                    display_name = get_server_alias(account_id, service_name, service_name)
+                result.append({
+                    'accountId': account_id,
+                    'accountAlias': acc.get('alias') or account_id,
+                    'serviceName': service_name,
+                    'displayName': display_name
+                })
+        except Exception as e:
+            add_log('WARNING', f"获取账户 {account_id} 服务器列表失败: {str(e)}", 'bot')
+    return result
+
+
+def build_alias_selection_message(servers):
+    if not servers:
+        return "当前没有可绑定别名的服务器。"
+    lines = ["请选择要绑定别名的服务器，回复对应编号："]
+    for idx, server in enumerate(servers, 1):
+        lines.append(f"{idx}. {server['accountAlias']} | {server['displayName']} | {server['serviceName']}")
+    return '\n'.join(lines)
 
 
 def build_monitor_message(account_id):
@@ -923,8 +1032,44 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
     normalized = (text or '').strip()
     lower = normalized.lower()
     effective_account = get_effective_bot_account(channel, user_key)
+
+    pending = get_bot_pending_action(channel, user_key)
+    if pending.get('type') == 'alias_select':
+        try:
+            choice = int(normalized)
+        except Exception:
+            return "请输入有效编号。"
+        servers = pending.get('servers') or []
+        if choice < 1 or choice > len(servers):
+            return "编号超出范围，请重新输入。"
+        server = servers[choice - 1]
+        set_bot_pending_action(channel, user_key, {
+            'type': 'alias_input',
+            'accountId': server.get('accountId'),
+            'serviceName': server.get('serviceName'),
+            'displayName': server.get('displayName')
+        })
+        return f"已选择服务器：{server.get('displayName')} ({server.get('serviceName')})\n请直接回复新的别名。"
+
+    if pending.get('type') == 'alias_input':
+        alias = normalized.strip()
+        if not alias:
+            return "别名不能为空，请重新输入。"
+        account_id = pending.get('accountId')
+        service_name = pending.get('serviceName')
+        set_server_alias(account_id, service_name, alias)
+        clear_bot_pending_action(channel, user_key)
+        return f"已为服务器 {service_name} 绑定别名：{alias}"
+
     if lower in ['/help', 'help']:
         return build_bot_help_message()
+    if lower == '/alias':
+        servers = list_all_account_servers()
+        set_bot_pending_action(channel, user_key, {
+            'type': 'alias_select',
+            'servers': servers
+        })
+        return build_alias_selection_message(servers)
     if lower == '/status':
         return build_status_message(effective_account)
     if lower == '/monitor':
@@ -937,7 +1082,8 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
         ok, message = switch_bot_account(channel, user_key, email)
         if not ok:
             return message
-        return message
+        current_account = get_effective_bot_account(channel, user_key)
+        return message + "\n\n" + build_status_message(current_account)
     parsed = parse_purchase_command(normalized)
     if not parsed:
         return "❌ 消息格式不正确\n\n" + build_bot_help_message()
@@ -6202,10 +6348,14 @@ def get_my_servers():
                 # 获取每台服务器的详细信息
                 server_info = client.get(f'/dedicated/server/{server_name}')
                 service_info = client.get(f'/dedicated/server/{server_name}/serviceInfos')
+                original_name = server_info.get('name', server_name)
+                alias_name = get_server_alias(account_id, server_name, original_name)
                 
                 servers.append({
                     'serviceName': server_name,
-                    'name': server_info.get('name', server_name),
+                    'name': alias_name,
+                    'originalName': original_name,
+                    'alias': alias_name if alias_name != original_name else '',
                     'commercialRange': server_info.get('commercialRange', 'N/A'),
                     'datacenter': server_info.get('datacenter', 'N/A'),
                     'state': server_info.get('state', 'unknown'),
@@ -6224,7 +6374,9 @@ def get_my_servers():
                 # 即使获取详情失败，也返回基本信息
                 servers.append({
                     'serviceName': server_name,
-                    'name': server_name,
+                    'name': get_server_alias(account_id, server_name, server_name),
+                    'originalName': server_name,
+                    'alias': get_server_alias(account_id, server_name, server_name) if get_server_alias(account_id, server_name, server_name) != server_name else '',
                     'error': str(e)
                 })
         

@@ -78,6 +78,8 @@ interface ServerOption {
 interface ServerPlan {
   planCode: string;
   name: string;
+  originalName?: string;
+  alias?: string;
   description?: string;
   cpu: string;
   memory: string;
@@ -333,7 +335,9 @@ const ServersPage = () => {
         const formattedServer = {
           ...server,
           planCode: server.planCode || "未知",
-          name: server.name || "未命名服务器",
+          name: server.name || server.alias || "未命名服务器",
+          originalName: server.originalName || server.name || "",
+          alias: server.alias || "",
           description: server.description || "",
           cpu: server.cpu || "N/A",
           memory: server.memory || "N/A", 

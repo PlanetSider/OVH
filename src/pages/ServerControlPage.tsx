@@ -11,6 +11,8 @@ import { apiEvents } from '@/context/APIContext';
 interface ServerInfo {
   serviceName: string;
   name: string;
+  originalName?: string;
+  alias?: string;
   commercialRange: string;
   datacenter: string;
   state: string;
@@ -2253,6 +2255,12 @@ const ServerControlPage: React.FC = () => {
                     <span className="text-cyber-muted">显示名称:</span>
                     <span className="text-cyber-text ml-2">{selectedServer.name}</span>
                   </div>
+                  {selectedServer.alias && selectedServer.originalName && selectedServer.originalName !== selectedServer.name && (
+                    <div className="py-2">
+                      <span className="text-cyber-muted">原始名称:</span>
+                      <span className="text-cyber-text ml-2">{selectedServer.originalName}</span>
+                    </div>
+                  )}
                   <div className="py-2">
                     <span className="text-cyber-muted">型号:</span>
                     <span className="text-cyber-text ml-2 font-mono">{selectedServer.commercialRange}</span>
