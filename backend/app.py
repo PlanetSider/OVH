@@ -864,6 +864,7 @@ def build_bot_help_message():
         "/switch <邮箱> - 切换到指定邮箱对应的 API 账户\n\n"
         "/alias - 为所有API账户下服务器绑定别名\n\n"
         "/unalias - 移除所有API账户下服务器别名\n\n"
+        "/alias-list - 查看所有已绑定的服务器别名\n\n"
         "下单命令：\n"
         "24sk202\n"
         "24sk202 rbx\n"
@@ -1180,6 +1181,35 @@ def build_tg_inline_keyboard(buttons, row_size=2):
     return {'inline_keyboard': inline_keyboard}
 
 
+def build_alias_list_message():
+    if not server_aliases:
+        return "当前没有已绑定的服务器别名。"
+
+    grouped = {}
+    for key, alias in server_aliases.items():
+        if ':' not in key:
+            continue
+        account_id, service_name = key.split(':', 1)
+        grouped.setdefault(account_id, []).append({
+            'serviceName': service_name,
+            'alias': alias
+        })
+
+    if not grouped:
+        return "当前没有已绑定的服务器别名。"
+
+    lines = ["服务器别名清单"]
+    for account_id, items in grouped.items():
+        acc = accounts.get(account_id) or {}
+        account_label = acc.get('alias') or account_id
+        lines.append("")
+        lines.append(f"账户: {account_label}")
+        for index, item in enumerate(sorted(items, key=lambda x: x['serviceName']), 1):
+            lines.append(f"[{index}] {item['alias']}")
+            lines.append(f"  服务名 : {item['serviceName']}")
+    return '\n'.join(lines).strip()
+
+
 def build_monitor_message(account_id):
     if not account_id or account_id not in accounts:
         return "当前没有可用的 API 账户。"
@@ -1288,6 +1318,8 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
 
     if lower in ['/help', 'help']:
         return {"text": build_bot_help_message()}
+    if lower == '/alias-list':
+        return {"text": build_alias_list_message()}
     if lower == '/alias':
         account_buttons = build_alias_account_buttons(channel, user_key)
         if channel == 'telegram':
