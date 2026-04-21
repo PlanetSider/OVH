@@ -692,7 +692,7 @@ def unwrap_feishu_payload(body):
         try:
             return feishu_client.decrypt_event(body.get("encrypt"))
         except Exception as e:
-            add_log("ERROR", f"飞书事件解密失败: {str(e)}", "feishu")
+            add_log("ERROR", f"飞书事件解密失败: {str(e)} | encrypt_len={len(body.get('encrypt') or '')}", "feishu")
             return {}
     return body
 

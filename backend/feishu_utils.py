@@ -51,17 +51,62 @@ class FeishuClient:
         encrypt_key = cfg.get("feishuEncryptKey") or ""
         if not encrypt_key or not encrypt_value:
             return {}
-        key = hashlib.sha256(encrypt_key.encode("utf-8")).digest()
         raw = base64.b64decode(encrypt_value)
-        iv = key[:16]
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        decrypted = cipher.decrypt(raw)
-        pad_len = decrypted[-1]
-        if isinstance(pad_len, str):
-            pad_len = ord(pad_len)
-        decrypted = decrypted[:-pad_len]
-        text = decrypted.decode("utf-8")
-        return json.loads(text)
+
+        def _normalize_key(key_text: str) -> bytes:
+            key_bytes = key_text.encode("utf-8")
+            if len(key_bytes) >= 32:
+                return key_bytes[:32]
+            return key_bytes.ljust(32, b"\0")
+
+        def _unpad(data: bytes) -> bytes:
+            if not data:
+                return data
+            pad_len = data[-1]
+            if isinstance(pad_len, str):
+                pad_len = ord(pad_len)
+            if isinstance(pad_len, int) and 0 < pad_len <= 16 and len(data) >= pad_len:
+                return data[:-pad_len]
+            return data
+
+        def _extract_json(data: bytes) -> Dict[str, Any]:
+            trimmed = _unpad(data)
+            candidates = [trimmed]
+            start = trimmed.find(b"{")
+            end = trimmed.rfind(b"}")
+            if start != -1 and end != -1 and end > start:
+                candidates.append(trimmed[start:end + 1])
+            for item in candidates:
+                try:
+                    return json.loads(item.decode("utf-8"))
+                except Exception:
+                    try:
+                        return json.loads(item.decode("utf-8", errors="ignore"))
+                    except Exception:
+                        continue
+            raise ValueError("unable to decode decrypted payload as JSON")
+
+        keys = [
+            hashlib.sha256(encrypt_key.encode("utf-8")).digest(),
+            _normalize_key(encrypt_key)
+        ]
+        attempts = []
+        for candidate_key in keys:
+            attempts.append((candidate_key, candidate_key[:16], raw, "fixed-iv"))
+            if len(raw) > 16:
+                attempts.append((candidate_key, raw[:16], raw[16:], "payload-iv"))
+
+        last_error = None
+        for candidate_key, iv, ciphertext, mode_name in attempts:
+            try:
+                cipher = AES.new(candidate_key, AES.MODE_CBC, iv)
+                decrypted = cipher.decrypt(ciphertext)
+                return _extract_json(decrypted)
+            except Exception as e:
+                last_error = f"{mode_name}: {str(e)}"
+                continue
+
+        raise ValueError(last_error or "decrypt failed")
 
     def _fetch_tenant_access_token(self) -> str:
         cfg = self._cfg()
