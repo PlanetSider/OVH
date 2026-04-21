@@ -95,6 +95,7 @@ SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "subscriptions.json")
 CONFIG_SNIPER_FILE = os.path.join(DATA_DIR, "config_sniper_tasks.json")
 VPS_SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "vps_subscriptions.json")
 FEISHU_USERS_FILE = os.path.join(DATA_DIR, "feishu_users.json")
+BOT_USER_SELECTIONS_FILE = os.path.join(DATA_DIR, "bot_user_account_selections.json")
 
 config = {
     "tgToken": "",
@@ -139,6 +140,7 @@ last_selected_account_id = None
 monitor = None
 monitors = {}
 feishu_users = {}
+bot_user_account_selections = {}
 
 # 全局删除任务ID集合（用于立即停止后台线程处理）
 deleted_task_ids = set()
@@ -174,7 +176,7 @@ feishu_client = FeishuClient(get_feishu_config, lambda level, message, source="f
 
 # Load data from files if they exist
 def load_data():
-    global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts, feishu_users
+    global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts, feishu_users, bot_user_account_selections
     
     if os.path.exists(CONFIG_FILE):
         try:
@@ -414,6 +416,18 @@ def load_data():
                     print(f"警告: {FEISHU_USERS_FILE}文件为空")
         except json.JSONDecodeError:
             print(f"警告: {FEISHU_USERS_FILE}文件格式不正确")
+
+    if os.path.exists(BOT_USER_SELECTIONS_FILE):
+        try:
+            with open(BOT_USER_SELECTIONS_FILE, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    bot_user_account_selections = data if isinstance(data, dict) else {}
+                else:
+                    print(f"警告: {BOT_USER_SELECTIONS_FILE}文件为空")
+        except json.JSONDecodeError:
+            print(f"警告: {BOT_USER_SELECTIONS_FILE}文件格式不正确")
     
     # Update stats
     update_stats()
@@ -436,6 +450,8 @@ def save_data(do_flush=True):
             json.dump(server_plans, f, ensure_ascii=False, indent=2)
         with open(FEISHU_USERS_FILE, 'w', encoding='utf-8') as f:
             json.dump(feishu_users, f, ensure_ascii=False, indent=2)
+        with open(BOT_USER_SELECTIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(bot_user_account_selections, f, ensure_ascii=False, indent=2)
         try:
             acc_queue_map = {}
             for item in queue:
@@ -720,6 +736,197 @@ def extract_feishu_user_name(payload):
     sender = event.get("sender") or {}
     sender_id = sender.get("sender_id") or {}
     return sender_id.get("user_id") or payload.get("open_id") or ""
+
+
+def save_bot_user_account_selections():
+    try:
+        with open(BOT_USER_SELECTIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(bot_user_account_selections, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        add_log("WARNING", f"保存机器人账户切换状态失败: {str(e)}", "bot")
+
+
+def get_bot_selected_account(channel: str, user_key: str):
+    item = bot_user_account_selections.get(f"{channel}:{user_key}") or {}
+    account_id = item.get("accountId")
+    if account_id and account_id in accounts:
+        return account_id
+    return None
+
+
+def set_bot_selected_account(channel: str, user_key: str, account_id: str):
+    bot_user_account_selections[f"{channel}:{user_key}"] = {
+        "accountId": account_id,
+        "updatedAt": datetime.now().isoformat()
+    }
+    save_bot_user_account_selections()
+
+
+def get_effective_bot_account(channel: str, user_key: str):
+    selected = get_bot_selected_account(channel, user_key)
+    if selected:
+        return selected
+    if accounts:
+        try:
+            return next(iter(accounts.keys()))
+        except Exception:
+            return None
+    return None
+
+
+def build_bot_help_message():
+    return (
+        "可用命令：\n"
+        "/status - 查看当前API账户、服务器、监控和抢购概览\n"
+        "/monitor - 查看当前监控任务\n"
+        "/autobuy - 查看当前抢购任务\n"
+        "/switch - 依次循环切换 API 账户\n"
+        "/switch <邮箱> - 切换到指定邮箱对应的 API 账户\n\n"
+        "下单命令：\n"
+        "24sk202\n"
+        "24sk202 rbx\n"
+        "24sk202 1\n"
+        "24sk202 rbx 1"
+    )
+
+
+def build_status_message(account_id):
+    if not account_id or account_id not in accounts:
+        return "当前没有可用的 API 账户，请先在网页端配置账户。"
+    acc = accounts.get(account_id) or {}
+    client = get_ovh_client(account_id)
+    email = acc.get('alias') or account_id
+    customer_code = account_id
+    servers = []
+    if client:
+        try:
+            account_info = client.get('/me')
+            email = account_info.get('email') or email
+            customer_code = account_info.get('customerCode') or account_info.get('nichandle') or customer_code
+        except Exception as e:
+            add_log('WARNING', f"机器人命令获取账户信息失败: {str(e)}", 'bot')
+        try:
+            service_names = client.get('/dedicated/server')
+            for service_name in service_names[:20]:
+                try:
+                    server_info = client.get(f'/dedicated/server/{service_name}')
+                    service_info = client.get(f'/dedicated/server/{service_name}/serviceInfos')
+                    servers.append({
+                        'name': server_info.get('name', service_name),
+                        'state': server_info.get('state', service_info.get('status', 'unknown'))
+                    })
+                except Exception:
+                    servers.append({'name': service_name, 'state': 'unknown'})
+        except Exception as e:
+            add_log('WARNING', f"机器人命令获取服务器列表失败: {str(e)}", 'bot')
+    monitor_count = len([s for s in get_monitor_for_account(account_id).subscriptions if s.get('planCode')])
+    queue_items = [item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']]
+    lines = [
+        f"当前账户邮箱: {email}",
+        f"客户代码: {customer_code}",
+        f"监控任务数量: {monitor_count}",
+        f"抢购任务数量: {len(queue_items)}",
+        "",
+        "服务器列表:"
+    ]
+    if servers:
+        for server in servers:
+            lines.append(f"- {server.get('name')} | 状态: {server.get('state')}")
+    else:
+        lines.append("- 当前账户下暂无服务器")
+    return '\n'.join(lines)
+
+
+def build_monitor_message(account_id):
+    if not account_id or account_id not in accounts:
+        return "当前没有可用的 API 账户。"
+    subscriptions = get_monitor_for_account(account_id).subscriptions
+    if not subscriptions:
+        return "当前账户没有监控任务。"
+    lines = [f"当前监控任务（{len(subscriptions)}个）:"]
+    for sub in subscriptions:
+        dcs = sub.get('datacenters') or []
+        dc_text = ','.join([dc.upper() for dc in dcs]) if dcs else '全部机房'
+        lines.append(f"- {sub.get('planCode')} | 机房: {dc_text} | 自动下单: {'是' if sub.get('autoOrder') else '否'}")
+    return '\n'.join(lines)
+
+
+def build_autobuy_message(account_id):
+    if not account_id or account_id not in accounts:
+        return "当前没有可用的 API 账户。"
+    items = [item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']]
+    if not items:
+        return "当前账户没有抢购任务。"
+    lines = [f"当前抢购任务（{len(items)}个）:"]
+    for item in items:
+        dcs = item.get('datacenters') or ([item.get('datacenter')] if item.get('datacenter') else [])
+        dc_text = ' > '.join([str(dc).upper() for dc in dcs if dc]) if dcs else '全部机房'
+        lines.append(f"- {item.get('planCode')} | 机房: {dc_text} | 状态: {item.get('status')} | 数量: {item.get('quantity', 1)} | 自动支付: {'是' if item.get('auto_pay') else '否'}")
+    return '\n'.join(lines)
+
+
+def switch_bot_account(channel: str, user_key: str, email=None):
+    global last_selected_account_id
+    if not accounts:
+        return False, "当前没有可切换的 API 账户。"
+    account_ids = list(accounts.keys())
+    chosen_account = None
+    if email:
+        email_lower = email.strip().lower()
+        for aid, acc in accounts.items():
+            alias = (acc.get('alias') or '').strip().lower()
+            if alias == email_lower:
+                chosen_account = aid
+                break
+        if not chosen_account:
+            return False, f"未找到邮箱为 {email} 的 API 账户。"
+    else:
+        current = get_bot_selected_account(channel, user_key)
+        if current in account_ids:
+            idx = account_ids.index(current)
+            chosen_account = account_ids[(idx + 1) % len(account_ids)]
+        else:
+            chosen_account = account_ids[0]
+    set_bot_selected_account(channel, user_key, chosen_account)
+    last_selected_account_id = chosen_account
+    acc = accounts.get(chosen_account) or {}
+    return True, f"已切换到 API 账户: {acc.get('alias') or chosen_account}"
+
+
+def dispatch_bot_command(channel: str, user_key: str, text: str):
+    normalized = (text or '').strip()
+    lower = normalized.lower()
+    effective_account = get_effective_bot_account(channel, user_key)
+    if lower in ['/help', 'help']:
+        return build_bot_help_message()
+    if lower == '/status':
+        return build_status_message(effective_account)
+    if lower == '/monitor':
+        return build_monitor_message(effective_account)
+    if lower == '/autobuy':
+        return build_autobuy_message(effective_account)
+    if lower.startswith('/switch'):
+        parts = normalized.split(maxsplit=1)
+        email = parts[1].strip() if len(parts) > 1 else None
+        ok, message = switch_bot_account(channel, user_key, email)
+        if not ok:
+            return message
+        return message
+    parsed = parse_purchase_command(normalized)
+    if not parsed:
+        return "❌ 消息格式不正确\n\n" + build_bot_help_message()
+    if parsed.get('error'):
+        return f"❌ {parsed['error']}"
+    ok, result_msg = execute_purchase_command(
+        parsed['planCode'],
+        parsed.get('datacenter'),
+        parsed.get('quantity', 1),
+        source='feishu' if channel == 'feishu' else 'telegram',
+        account_id=effective_account
+    )
+    if result_msg.startswith(('✅', '❌')):
+        return result_msg
+    return ("✅ " if ok else "❌ ") + result_msg
 
 
 def send_feishu_text(message: str, open_id=None, account_id=None):
@@ -4025,169 +4232,12 @@ def telegram_webhook():
             tg_token = config.get("tgToken")
             
             add_log("INFO", f"收到Telegram普通消息: user_id={user_id}, text={text[:100]}", "telegram")
-            
-            # 解析消息格式：支持 "24sk202 rbx 1" 或 "24sk202 rbx" 或 "24sk202 1" 或 "24sk202"
-            # 格式：planCode [datacenter] [quantity]
-            import re
-            # 匹配最多三个参数：planCode, datacenter(可选), quantity(可选)
-            pattern = r'^(\S+)(?:\s+(\S+))?(?:\s+(\S+))?$'
-            match = re.match(pattern, text)
-            
-            if not match:
-                add_log("WARNING", f"消息格式不正确: {text}", "telegram")
-                # 发送提示消息
-                if tg_token and chat_id:
-                    help_message = "❌ 消息格式不正确\n\n正确格式：\n• 24sk202 rbx 1 - 下单指定机房的所有可用配置，数量为1\n• 24sk202 rbx - 下单指定机房的所有可用配置，默认数量为1\n• 24sk202 1 - 下单所有可用机房和配置，数量为1\n• 24sk202 - 下单所有可用机房和配置，默认数量为1"
-                    requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
-                        "chat_id": chat_id,
-                        "text": help_message
-                    }, timeout=5)
-                return jsonify({"ok": True})
-            
-            plan_code = match.group(1)
-            param2 = match.group(2) if match.group(2) else None
-            param3 = match.group(3) if match.group(3) else None
-            
-            # 解析参数：判断是机房还是数量
-            datacenter = None
-            quantity = 1  # 默认数量为1
-            
-            if param2:
-                if param2.isdigit():
-                    # 第二个参数是数字，表示数量（所有机房）
-                    quantity = int(param2)
-                else:
-                    # 第二个参数是机房代码
-                    datacenter = param2.lower()
-                    # 如果有第三个参数，应该是数量
-                    if param3:
-                        if param3.isdigit():
-                            quantity = int(param3)
-                        else:
-                            # 第三个参数不是数字，格式错误
-                            add_log("WARNING", f"消息格式不正确: 第三个参数应该是数字（数量），但收到: {param3}", "telegram")
-                            if tg_token and chat_id:
-                                help_message = "❌ 消息格式不正确\n\n第三个参数应该是数字（数量）\n正确格式：\n• 24sk202 rbx 1 - 下单指定机房的所有可用配置，数量为1"
-                                requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
-                                    "chat_id": chat_id,
-                                    "text": help_message
-                                }, timeout=5)
-                            return jsonify({"ok": True})
-            
-            add_log("INFO", f"解析结果: plan_code={plan_code}, datacenter={datacenter}, quantity={quantity}", "telegram")
-            
-            # 查询可用配置
-            try:
-                # 使用现有的函数获取所有配置组合的可用性（包含正确的 options）
-                # 该函数内部会处理 OVH 客户端连接
-                configs_data = check_server_availability_with_configs(plan_code)
-                
-                if not configs_data or len(configs_data) == 0:
-                    error_msg = f"未找到 {plan_code} 的可用配置"
-                    add_log("WARNING", error_msg, "telegram")
-                    if tg_token and chat_id:
-                        requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
-                            "chat_id": chat_id,
-                            "text": f"❌ {error_msg}"
-                        }, timeout=5)
-                    return jsonify({"ok": True})
-                
-                # 收集所有可用的配置和机房组合
-                available_configs = []
-                seen_configs = set()
-                
-                for config_key, config_data in configs_data.items():
-                    memory = config_data.get("memory", "N/A")
-                    storage = config_data.get("storage", "N/A")
-                    options = config_data.get("options", [])  # 从函数返回的结果中获取 options
-                    datacenters = config_data.get("datacenters", {})
-                    
-                    # 检查每个机房的可用性
-                    for dc, availability in datacenters.items():
-                        dc_lower = dc.lower()
-                        
-                        # 如果指定了机房，只处理该机房
-                        if datacenter and dc_lower != datacenter:
-                            continue
-                        
-                        # 只处理有货的配置
-                        if availability not in ["unavailable", "unknown"]:
-                            config_dc_key = (config_key, dc_lower)
-                            if config_dc_key not in seen_configs:
-                                seen_configs.add(config_dc_key)
-                                available_configs.append({
-                                    "planCode": plan_code,
-                                    "datacenter": dc_lower,
-                                    "options": options,  # 使用从函数获取的 options
-                                    "memory": memory,
-                                    "storage": storage
-                                })
-                
-                if not available_configs:
-                    error_msg = f"❌ {plan_code} 当前没有可用配置"
-                    if datacenter:
-                        error_msg += f"（机房: {datacenter.upper()}）"
-                    add_log("WARNING", error_msg, "telegram")
-                    if tg_token and chat_id:
-                        requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
-                            "chat_id": chat_id,
-                            "text": error_msg
-                        }, timeout=5)
-                    return jsonify({"ok": True})
-                
-                # 添加到队列（每个配置和机房组合，按数量添加）
-                added_count = 0
-                for config_info in available_configs:
-                    for _ in range(quantity):
-                        queue_item = {
-                            "id": str(uuid.uuid4()),
-                            "planCode": config_info["planCode"],
-                            "datacenters": [config_info["datacenter"]] if config_info.get("datacenter") else [],
-                            "options": config_info["options"],
-                            "status": "running",
-                            "createdAt": datetime.now().isoformat(),
-                            "updatedAt": datetime.now().isoformat(),
-                            "retryInterval": 30,
-                            "retryCount": 0,
-                            "lastCheckTime": 0,
-                            "fromTelegram": True,
-                            "accountId": get_account_id_from_request()
-                        }
-                        queue.append(queue_item)
-                        added_count += 1
-                
-                save_data()
-                update_stats()
-                
-                # 发送成功消息
-                success_msg = f"✅ 已添加 {added_count} 个任务到抢购队列\n\n"
-                success_msg += f"型号: {plan_code}\n"
-                if datacenter:
-                    success_msg += f"机房: {datacenter.upper()}\n"
-                else:
-                    success_msg += f"机房: 所有可用机房\n"
-                success_msg += f"数量: {quantity} 个/配置\n"
-                success_msg += f"配置数: {len(available_configs)} 个\n\n"
-                success_msg += "系统将自动尝试下单。"
-                
-                add_log("INFO", f"Telegram用户 {user_id} 通过消息添加了 {added_count} 个任务到队列", "telegram")
-                
-                if tg_token and chat_id:
-                    requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
-                        "chat_id": chat_id,
-                        "text": success_msg
-                    }, timeout=5)
-                
-            except Exception as e:
-                error_msg = f"处理消息时出错: {str(e)}"
-                add_log("ERROR", error_msg, "telegram")
-                import traceback
-                add_log("ERROR", f"错误详情: {traceback.format_exc()}", "telegram")
-                if tg_token and chat_id:
-                    requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
-                        "chat_id": chat_id,
-                        "text": f"❌ {error_msg}"
-                    }, timeout=5)
+            response_text = dispatch_bot_command('telegram', str(user_id), text)
+            if tg_token and chat_id and response_text:
+                requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": response_text
+                }, timeout=5)
             
             return jsonify({"ok": True})
         
@@ -4257,24 +4307,9 @@ def feishu_events():
     if not text:
         return jsonify({"code": 0})
 
-    parsed = parse_purchase_command(text)
-    if not parsed:
-        send_feishu_text(
-            "❌ 消息格式不正确\n\n正确格式：\n• 24sk202 rbx 1\n• 24sk202 rbx\n• 24sk202 1\n• 24sk202",
-            open_id=sender
-        )
-        return jsonify({"code": 0})
-    if parsed.get("error"):
-        send_feishu_text(f"❌ {parsed['error']}", open_id=sender)
-        return jsonify({"code": 0})
-
-    ok, result_msg = execute_purchase_command(
-        parsed["planCode"],
-        parsed.get("datacenter"),
-        parsed.get("quantity", 1),
-        source="feishu"
-    )
-    send_feishu_text(("✅ " if ok else "❌ ") + result_msg if not result_msg.startswith(("✅", "❌")) else result_msg, open_id=sender)
+    response_text = dispatch_bot_command('feishu', sender or 'anonymous', text)
+    if response_text:
+        send_feishu_text(response_text, open_id=sender)
     return jsonify({"code": 0})
 
 
@@ -10147,7 +10182,8 @@ def accounts_api():
             a.pop('tgChatId', None)
             sanitized.append(a)
         return jsonify({
-            "accounts": sanitized
+            "accounts": sanitized,
+            "currentAccountId": last_selected_account_id if last_selected_account_id in accounts else (next(iter(accounts.keys())) if accounts else "")
         })
     data = request.json or {}
     acc_id = data.get('id')

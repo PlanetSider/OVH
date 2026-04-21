@@ -158,7 +158,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
       const list = res.data?.accounts || [];
       setAccounts(list);
       const local = localStorage.getItem('current_account_id');
-      const useId = local || (list.length > 0 ? list[0].id : '');
+      const serverCurrent = res.data?.currentAccountId || '';
+      const useId = serverCurrent || local || (list.length > 0 ? list[0].id : '');
       if (useId) {
         setCurrentAccountIdState(useId);
         localStorage.setItem('current_account_id', useId);
