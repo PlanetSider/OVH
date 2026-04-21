@@ -21,6 +21,11 @@ interface APIContextType {
   endpoint: string;
   tgToken: string;
   tgChatId: string;
+  feishuEnabled: boolean;
+  feishuAppId: string;
+  feishuAppSecret: string;
+  feishuVerificationToken: string;
+  feishuEncryptKey: string;
   iam: string;
   zone: string;
   isLoading: boolean;
@@ -42,6 +47,11 @@ interface APIKeysType {
   endpoint?: string;
   tgToken?: string;
   tgChatId?: string;
+  feishuEnabled?: boolean;
+  feishuAppId?: string;
+  feishuAppSecret?: string;
+  feishuVerificationToken?: string;
+  feishuEncryptKey?: string;
   iam?: string;
   zone?: string;
 }
@@ -57,6 +67,11 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
   const [endpoint, setEndpoint] = useState<string>('ovh-eu');
   const [tgToken, setTgToken] = useState<string>('');
   const [tgChatId, setTgChatId] = useState<string>('');
+  const [feishuEnabled, setFeishuEnabled] = useState<boolean>(false);
+  const [feishuAppId, setFeishuAppId] = useState<string>('');
+  const [feishuAppSecret, setFeishuAppSecret] = useState<string>('');
+  const [feishuVerificationToken, setFeishuVerificationToken] = useState<string>('');
+  const [feishuEncryptKey, setFeishuEncryptKey] = useState<string>('');
   const [iam, setIam] = useState<string>('go-ovh-ie');
   const [zone, setZone] = useState<string>('IE');
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -84,6 +99,11 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         // 始终加载 Telegram 设置（不依赖 OVH 账户是否存在）
         setTgToken(data?.tgToken || '');
         setTgChatId(data?.tgChatId || '');
+        setFeishuEnabled(!!data?.feishuEnabled);
+        setFeishuAppId(data?.feishuAppId || '');
+        setFeishuAppSecret(data?.feishuAppSecret || '');
+        setFeishuVerificationToken(data?.feishuVerificationToken || '');
+        setFeishuEncryptKey(data?.feishuEncryptKey || '');
 
         // 仅当存在全局（旧）OVH设置时才填充这些字段
         if (data && data.appKey) {
@@ -173,6 +193,11 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         endpoint: keys.endpoint || 'ovh-eu',
         tgToken: keys.tgToken || '',
         tgChatId: keys.tgChatId || '',
+        feishuEnabled: !!keys.feishuEnabled,
+        feishuAppId: keys.feishuAppId || '',
+        feishuAppSecret: keys.feishuAppSecret || '',
+        feishuVerificationToken: keys.feishuVerificationToken || '',
+        feishuEncryptKey: keys.feishuEncryptKey || '',
         iam: keys.iam || 'go-ovh-ie',
         zone: keys.zone || 'IE'
       });
@@ -183,6 +208,11 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
       setEndpoint(keys.endpoint || 'ovh-eu');
       setTgToken(keys.tgToken || '');
       setTgChatId(keys.tgChatId || '');
+      setFeishuEnabled(!!keys.feishuEnabled);
+      setFeishuAppId(keys.feishuAppId || '');
+      setFeishuAppSecret(keys.feishuAppSecret || '');
+      setFeishuVerificationToken(keys.feishuVerificationToken || '');
+      setFeishuEncryptKey(keys.feishuEncryptKey || '');
       setIam(keys.iam || 'go-ovh-ie');
       setZone(keys.zone || 'IE');
       
@@ -244,6 +274,11 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
     endpoint,
     tgToken,
     tgChatId,
+    feishuEnabled,
+    feishuAppId,
+    feishuAppSecret,
+    feishuVerificationToken,
+    feishuEncryptKey,
     iam,
     zone,
     isLoading,

@@ -22,6 +22,7 @@ from telegram_utils import tg_answer_callback as tg_answer
 from telegram_utils import tg_send_message as tg_send
 from telegram_utils import processed_callback_ids
 from dotenv import load_dotenv
+from feishu_utils import FeishuClient
 
 APP_VERSION = "v2.0.5"
 # 加载 .env 文件
@@ -93,10 +94,16 @@ SERVERS_FILE = os.path.join(DATA_DIR, "servers.json")
 SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "subscriptions.json")
 CONFIG_SNIPER_FILE = os.path.join(DATA_DIR, "config_sniper_tasks.json")
 VPS_SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "vps_subscriptions.json")
+FEISHU_USERS_FILE = os.path.join(DATA_DIR, "feishu_users.json")
 
 config = {
     "tgToken": "",
     "tgChatId": "",
+    "feishuEnabled": False,
+    "feishuAppId": "",
+    "feishuAppSecret": "",
+    "feishuVerificationToken": "",
+    "feishuEncryptKey": "",
     "sshKey": "",
 }
 
@@ -131,6 +138,7 @@ last_selected_account_id = None
 # 初始化监控器（需要在函数定义后才能传入函数引用）
 monitor = None
 monitors = {}
+feishu_users = {}
 
 # 全局删除任务ID集合（用于立即停止后台线程处理）
 deleted_task_ids = set()
@@ -151,9 +159,22 @@ processing_item_ids = set()
 account_checkout_semaphores = {}
 executor = ThreadPoolExecutor(max_workers=3)
 
+
+def get_feishu_config():
+    return {
+        "feishuEnabled": bool(config.get("feishuEnabled", False)),
+        "feishuAppId": config.get("feishuAppId", ""),
+        "feishuAppSecret": config.get("feishuAppSecret", ""),
+        "feishuVerificationToken": config.get("feishuVerificationToken", ""),
+        "feishuEncryptKey": config.get("feishuEncryptKey", "")
+    }
+
+
+feishu_client = FeishuClient(get_feishu_config, lambda level, message, source="feishu": add_log(level, message, source))
+
 # Load data from files if they exist
 def load_data():
-    global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts
+    global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts, feishu_users
     
     if os.path.exists(CONFIG_FILE):
         try:
@@ -381,6 +402,18 @@ def load_data():
                     print(f"警告: {VPS_SUBSCRIPTIONS_FILE}文件为空")
         except json.JSONDecodeError:
             print(f"警告: {VPS_SUBSCRIPTIONS_FILE}文件格式不正确")
+
+    if os.path.exists(FEISHU_USERS_FILE):
+        try:
+            with open(FEISHU_USERS_FILE, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    feishu_users = data if isinstance(data, dict) else {}
+                else:
+                    print(f"警告: {FEISHU_USERS_FILE}文件为空")
+        except json.JSONDecodeError:
+            print(f"警告: {FEISHU_USERS_FILE}文件格式不正确")
     
     # Update stats
     update_stats()
@@ -401,6 +434,8 @@ def save_data(do_flush=True):
             json.dump(purchase_history, f, ensure_ascii=False, indent=2)
         with open(SERVERS_FILE, 'w', encoding='utf-8') as f:
             json.dump(server_plans, f, ensure_ascii=False, indent=2)
+        with open(FEISHU_USERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(feishu_users, f, ensure_ascii=False, indent=2)
         try:
             acc_queue_map = {}
             for item in queue:
@@ -630,6 +665,246 @@ def _parse_callback_data(callback_query):
 def _tg_post(url, payload, timeout=5):
     return tg_post_util(url, payload, timeout)
 
+
+def get_bound_feishu_user(account_id=None):
+    aid = account_id or get_account_id_from_request() or "default"
+    return feishu_users.get(aid) or {}
+
+
+def bind_feishu_user(open_id, user_name="", account_id=None):
+    aid = account_id or get_account_id_from_request() or "default"
+    feishu_users[aid] = {
+        "open_id": open_id,
+        "user_name": user_name or ""
+    }
+    try:
+        with open(FEISHU_USERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(feishu_users, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        add_log("WARNING", f"保存飞书用户绑定失败: {str(e)}", "feishu")
+    add_log("INFO", f"已绑定飞书用户: account={aid}, open_id={open_id}", "feishu")
+
+
+def send_feishu_text(message: str, open_id=None, account_id=None):
+    if not feishu_client.is_enabled():
+        add_log("WARNING", "飞书消息未发送: 飞书应用未启用或配置不完整", "feishu")
+        return False
+    target_open_id = open_id or (get_bound_feishu_user(account_id).get("open_id"))
+    if not target_open_id:
+        add_log("WARNING", "飞书消息未发送: 未绑定飞书私聊用户", "feishu")
+        return False
+    try:
+        feishu_client.send_text(target_open_id, message, "open_id")
+        add_log("INFO", f"成功发送消息到飞书: open_id={target_open_id}", "feishu")
+        return True
+    except Exception as e:
+        add_log("ERROR", f"发送飞书消息失败: {str(e)}", "feishu")
+        return False
+
+
+def send_feishu_card(card: dict, open_id=None, account_id=None):
+    if not feishu_client.is_enabled():
+        add_log("WARNING", "飞书卡片未发送: 飞书应用未启用或配置不完整", "feishu")
+        return False
+    target_open_id = open_id or (get_bound_feishu_user(account_id).get("open_id"))
+    if not target_open_id:
+        add_log("WARNING", "飞书卡片未发送: 未绑定飞书私聊用户", "feishu")
+        return False
+    try:
+        feishu_client.send_card(target_open_id, card, "open_id")
+        add_log("INFO", f"成功发送飞书卡片: open_id={target_open_id}", "feishu")
+        return True
+    except Exception as e:
+        add_log("ERROR", f"发送飞书卡片失败: {str(e)}", "feishu")
+        return False
+
+
+def send_multi_channel_message(message: str, reply_markup=None, account_id=None):
+    tg_ok = send_telegram_msg(message, reply_markup)
+    fs_ok = send_feishu_text(message, account_id=account_id)
+    return tg_ok or fs_ok
+
+
+def build_feishu_order_card(title: str, description: str, actions: list):
+    elements = [
+        {
+            "tag": "markdown",
+            "content": description
+        }
+    ]
+    if actions:
+        elements.append({
+            "tag": "action",
+            "actions": actions
+        })
+    return {
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": title
+            },
+            "template": "blue"
+        },
+        "elements": elements
+    }
+
+
+def build_feishu_test_card():
+    test_uuid = str(uuid.uuid4())
+    monitor_obj = get_monitor_for_account()
+    if hasattr(monitor_obj, 'message_uuid_cache'):
+        acc_list = list(accounts.keys())
+        if not acc_list:
+            acc_list = ["default"]
+        monitor_obj.message_uuid_cache[test_uuid] = {
+            "planCode": "24sk1",
+            "datacenter": "rbx",
+            "options": [],
+            "accountIds": acc_list,
+            "forceAccountSelection": True,
+            "timestamp": time.time(),
+            "sourceChannel": "feishu-test"
+        }
+    return build_feishu_order_card(
+        "飞书交互测试卡片",
+        "这是一个完整链路测试卡片，用于验证飞书按钮交互。\n点击后会进入账户选择、数量/自动支付选择，并最终写入队列。\n型号: 24sk1\n机房: RBX",
+        [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "开始完整测试"},
+                "type": "primary",
+                "value": {"action": "add_to_queue", "uuid": test_uuid}
+            }
+        ]
+    )
+
+
+def build_feishu_card_from_tg_markup(message: str, reply_markup):
+    inline_keyboard = (reply_markup or {}).get("inline_keyboard") if isinstance(reply_markup, dict) else None
+    if not inline_keyboard:
+        return None
+    actions = []
+    for row in inline_keyboard:
+        for button in row:
+            callback_data = button.get("callback_data")
+            if not callback_data:
+                continue
+            try:
+                callback_obj = json.loads(callback_data)
+            except Exception:
+                continue
+            action = callback_obj.get("a") or callback_obj.get("action")
+            value = {"action": action}
+            if callback_obj.get("u"):
+                value["uuid"] = callback_obj.get("u")
+            if callback_obj.get("i") is not None:
+                value["index"] = callback_obj.get("i")
+            if callback_obj.get("q") is not None:
+                value["quantity"] = callback_obj.get("q")
+            if callback_obj.get("p") is not None:
+                value["autoPay"] = bool(int(callback_obj.get("p"))) if str(callback_obj.get("p")).isdigit() else callback_obj.get("p")
+            actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": button.get("text", "操作")},
+                "type": "default",
+                "value": value
+            })
+    if not actions:
+        return None
+    return build_feishu_order_card("库存交互通知", message.replace("\n", "\n"), actions)
+
+
+def parse_purchase_command(text: str):
+    pattern = r'^(\S+)(?:\s+(\S+))?(?:\s+(\S+))?$'
+    match = re.match(pattern, text or "")
+    if not match:
+        return None
+    plan_code = match.group(1)
+    param2 = match.group(2) if match.group(2) else None
+    param3 = match.group(3) if match.group(3) else None
+    datacenter = None
+    quantity = 1
+    if param2:
+        if param2.isdigit():
+            quantity = int(param2)
+        else:
+            datacenter = param2.lower()
+            if param3:
+                if not param3.isdigit():
+                    return {"error": "第三个参数应该是数字（数量）"}
+                quantity = int(param3)
+    return {
+        "planCode": plan_code,
+        "datacenter": datacenter,
+        "quantity": quantity
+    }
+
+
+def execute_purchase_command(plan_code: str, datacenter=None, quantity=1, source="telegram", account_id=None):
+    configs_data = check_server_availability_with_configs(plan_code, account_id)
+    if not configs_data or len(configs_data) == 0:
+        return False, f"未找到 {plan_code} 的可用配置"
+
+    available_configs = []
+    seen_configs = set()
+    for _, config_data in configs_data.items():
+        options = config_data.get("options", [])
+        memory = config_data.get("memory", "N/A")
+        storage = config_data.get("storage", "N/A")
+        datacenters = config_data.get("datacenters", {})
+        for dc, availability in datacenters.items():
+            dc_lower = dc.lower()
+            if datacenter and dc_lower != datacenter:
+                continue
+            if availability in ["unavailable", "unknown"]:
+                continue
+            config_dc_key = (memory, storage, dc_lower)
+            if config_dc_key in seen_configs:
+                continue
+            seen_configs.add(config_dc_key)
+            available_configs.append({
+                "planCode": plan_code,
+                "datacenter": dc_lower,
+                "options": options,
+                "memory": memory,
+                "storage": storage
+            })
+
+    if not available_configs:
+        msg = f"{plan_code} 当前没有可用配置"
+        if datacenter:
+            msg += f"（机房: {datacenter.upper()}）"
+        return False, msg
+
+    added_count = 0
+    chosen_account_id = account_id or get_account_id_from_request()
+    for config_info in available_configs:
+        queue_item = {
+            "id": str(uuid.uuid4()),
+            "planCode": config_info["planCode"],
+            "datacenters": [config_info["datacenter"]] if config_info.get("datacenter") else [],
+            "options": config_info["options"],
+            "status": "running",
+            "createdAt": datetime.now().isoformat(),
+            "updatedAt": datetime.now().isoformat(),
+            "retryInterval": 30,
+            "retryCount": 0,
+            "lastCheckTime": 0,
+            "accountId": chosen_account_id,
+            "quantity": max(1, min(int(quantity or 1), 100)),
+            "fromTelegram": source == "telegram",
+            "fromFeishu": source == "feishu"
+        }
+        queue.append(queue_item)
+        added_count += 1
+
+    save_data()
+    update_stats()
+    success_msg = f"✅ 已添加 {added_count} 个任务到抢购队列\n\n型号: {plan_code}\n"
+    success_msg += f"机房: {(datacenter or '所有可用机房').upper() if datacenter else '所有可用机房'}\n"
+    success_msg += f"数量: {quantity} 个/配置\n配置数: {len(available_configs)} 个\n\n系统将自动尝试下单。"
+    return True, success_msg
+
 def get_current_account_config(account_id=None):
     aid = account_id or get_account_id_from_request()
     if aid and accounts.get(aid):
@@ -642,6 +917,11 @@ def get_current_account_config(account_id=None):
             "zone": acc.get("zone", config.get("zone", "IE")),
             "tgToken": acc.get("tgToken", config.get("tgToken", "")),
             "tgChatId": acc.get("tgChatId", config.get("tgChatId", "")),
+            "feishuEnabled": acc.get("feishuEnabled", config.get("feishuEnabled", False)),
+            "feishuAppId": acc.get("feishuAppId", config.get("feishuAppId", "")),
+            "feishuAppSecret": acc.get("feishuAppSecret", config.get("feishuAppSecret", "")),
+            "feishuVerificationToken": acc.get("feishuVerificationToken", config.get("feishuVerificationToken", "")),
+            "feishuEncryptKey": acc.get("feishuEncryptKey", config.get("feishuEncryptKey", "")),
             "id": aid,
             "alias": acc.get("alias")
         }
@@ -653,6 +933,11 @@ def get_current_account_config(account_id=None):
         "zone": config.get("zone", "IE"),
         "tgToken": config.get("tgToken", ""),
         "tgChatId": config.get("tgChatId", ""),
+        "feishuEnabled": config.get("feishuEnabled", False),
+        "feishuAppId": config.get("feishuAppId", ""),
+        "feishuAppSecret": config.get("feishuAppSecret", ""),
+        "feishuVerificationToken": config.get("feishuVerificationToken", ""),
+        "feishuEncryptKey": config.get("feishuEncryptKey", ""),
         "id": None,
         "alias": None
     }
@@ -1221,10 +1506,10 @@ def purchase_server(queue_item):
                     f"价格(不含税): {price_without_tax if price_without_tax is not None else 'N/A'} {currency_code or ''}\n"
                     f"抢购任务ID: {queue_item['id']}"
                 )
-                send_telegram_msg(msg)
-                add_log("INFO", f"已为订单 {order_id_val} 发送 Telegram 成功通知。", "purchase")
+                send_bot_message(msg)
+                add_log("INFO", f"已为订单 {order_id_val} 发送成功通知。", "purchase")
             else:
-                add_log("INFO", "未配置 Telegram Token 或 Chat ID，跳过成功通知发送。", "purchase")
+                add_log("INFO", "未配置 Telegram 或飞书可用接收方，跳过成功通知发送。", "purchase")
             return 1  # 返回成功数量
 
         # 并发模式：按优先级机房平均分配线程，线程共享预读取的region/options/价格信息
@@ -1309,7 +1594,7 @@ def purchase_server(queue_item):
                         f"并发序号: {seq_index}/{remaining_to_buy}\n"
                         f"任务ID: {queue_item['id']}"
                     )
-                    send_telegram_msg(msg)
+                send_bot_message(msg)
                 return True
             except Exception as e:
                 err = str(e)
@@ -2561,6 +2846,18 @@ def send_telegram_msg(message: str, reply_markup=None):
         add_log("ERROR", f"错误详情: {traceback.format_exc()}")
         return False
 
+
+def send_bot_message(message: str, reply_markup=None, account_id=None):
+    tg_ok = send_telegram_msg(message, reply_markup)
+    fs_ok = False
+    if reply_markup:
+        card = build_feishu_card_from_tg_markup(message, reply_markup)
+        if card:
+            fs_ok = send_feishu_card(card, account_id=account_id)
+    if not fs_ok:
+        fs_ok = send_feishu_text(message, account_id=account_id)
+    return tg_ok or fs_ok
+
 # 初始化服务器监控器
 def init_monitor():
     global monitor, monitors
@@ -2571,7 +2868,7 @@ def init_monitor():
         first_aid = None
     monitor = ServerMonitor(
         check_availability_func=check_server_availability_with_configs,
-        send_notification_func=send_telegram_msg,
+        send_notification_func=send_bot_message,
         add_log_func=add_log,
         account_id=first_aid
     )
@@ -2584,7 +2881,7 @@ def get_monitor_for_account(account_id=None):
     if not monitor:
         monitor = ServerMonitor(
             check_availability_func=check_server_availability_with_configs,
-            send_notification_func=send_telegram_msg,
+            send_notification_func=send_bot_message,
             add_log_func=add_log,
             account_id=None
         )
@@ -2623,6 +2920,16 @@ def save_settings():
         config["tgToken"] = data.get("tgToken")
     if data.get("tgChatId") is not None:
         config["tgChatId"] = data.get("tgChatId")
+    if data.get("feishuEnabled") is not None:
+        config["feishuEnabled"] = bool(data.get("feishuEnabled"))
+    if data.get("feishuAppId") is not None:
+        config["feishuAppId"] = data.get("feishuAppId") or ""
+    if data.get("feishuAppSecret") is not None:
+        config["feishuAppSecret"] = data.get("feishuAppSecret") or ""
+    if data.get("feishuVerificationToken") is not None:
+        config["feishuVerificationToken"] = data.get("feishuVerificationToken") or ""
+    if data.get("feishuEncryptKey") is not None:
+        config["feishuEncryptKey"] = data.get("feishuEncryptKey") or ""
     if data.get("sshKey") is not None:
         config["sshKey"] = data.get("sshKey") or ""
 
@@ -2634,7 +2941,7 @@ def save_settings():
     if current_tg_token and current_tg_chat_id:
         if (current_tg_token != prev_tg_token) or (current_tg_chat_id != prev_tg_chat_id) or not prev_tg_token or not prev_tg_chat_id:
             add_log("INFO", f"Telegram Token 或 Chat ID 更新，发送测试消息到: {current_tg_chat_id}")
-            test_result = send_telegram_msg("OVH Phantom Sniper: Telegram 通知已成功配置 (测试)")
+            test_result = send_bot_message("OVH Phantom Sniper: Telegram 通知已成功配置 (测试)")
             if test_result:
                 add_log("INFO", "Telegram 测试消息发送成功")
             else:
@@ -2643,6 +2950,9 @@ def save_settings():
             add_log("INFO", "Telegram 配置未更改，跳过测试消息")
     else:
         add_log("INFO", "未配置 Telegram Token 或 Chat ID，跳过测试消息")
+
+    if config.get("feishuEnabled") and config.get("feishuAppId") and config.get("feishuAppSecret"):
+        add_log("INFO", "飞书应用配置已更新", "feishu")
 
     return jsonify({"status": "success"})
 
@@ -3854,25 +4164,271 @@ def telegram_webhook():
 
 @app.route('/api/monitor/test-notification', methods=['POST'])
 def test_notification():
-    """测试Telegram通知"""
+    """测试通知通道"""
     try:
         test_message = (
             "🔔 服务器监控测试通知\n\n"
             f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            "✅ Telegram通知配置正常！"
+            "✅ 机器人通知配置正常！"
         )
         
-        result = send_telegram_msg(test_message)
+        result = send_multi_channel_message(test_message)
         
         if result:
-            add_log("INFO", "Telegram测试通知发送成功", "monitor")
-            return jsonify({"status": "success", "message": "测试通知已发送，请检查Telegram"})
+            add_log("INFO", "测试通知发送成功", "monitor")
+            return jsonify({"status": "success", "message": "测试通知已发送，请检查 Telegram/飞书"})
         else:
-            add_log("WARNING", "Telegram测试通知发送失败", "monitor")
-            return jsonify({"status": "error", "message": "发送失败，请检查Telegram配置和日志"}), 500
+            add_log("WARNING", "测试通知发送失败", "monitor")
+            return jsonify({"status": "error", "message": "发送失败，请检查 Telegram/飞书 配置和日志"}), 500
     except Exception as e:
         add_log("ERROR", f"测试通知异常: {str(e)}", "monitor")
         return jsonify({"status": "error", "message": f"发送异常: {str(e)}"}), 500
+
+
+@app.route('/api/feishu/events', methods=['POST'])
+def feishu_events():
+    raw_body = request.get_data() or b''
+    body = request.get_json(silent=True) or {}
+
+    challenge = body.get("challenge")
+    if challenge:
+        return jsonify({"challenge": challenge})
+
+    if not feishu_client.verify_token(body.get("token", "")):
+        return jsonify({"code": 1, "msg": "invalid token"}), 403
+
+    event = body.get("event") or {}
+    sender = (((event.get("sender") or {}).get("sender_id") or {}).get("open_id")) or ""
+    sender_name = ((event.get("sender") or {}).get("sender_id") or {}).get("user_id") or ""
+    message = event.get("message") or {}
+    content_str = message.get("content") or "{}"
+    try:
+        content = json.loads(content_str)
+    except Exception:
+        content = {}
+    text = (content.get("text") or "").strip()
+    if sender:
+        bind_feishu_user(sender, sender_name)
+    if not text:
+        return jsonify({"code": 0})
+
+    parsed = parse_purchase_command(text)
+    if not parsed:
+        send_feishu_text(
+            "❌ 消息格式不正确\n\n正确格式：\n• 24sk202 rbx 1\n• 24sk202 rbx\n• 24sk202 1\n• 24sk202",
+            open_id=sender
+        )
+        return jsonify({"code": 0})
+    if parsed.get("error"):
+        send_feishu_text(f"❌ {parsed['error']}", open_id=sender)
+        return jsonify({"code": 0})
+
+    ok, result_msg = execute_purchase_command(
+        parsed["planCode"],
+        parsed.get("datacenter"),
+        parsed.get("quantity", 1),
+        source="feishu"
+    )
+    send_feishu_text(("✅ " if ok else "❌ ") + result_msg if not result_msg.startswith(("✅", "❌")) else result_msg, open_id=sender)
+    return jsonify({"code": 0})
+
+
+@app.route('/api/feishu/card-action', methods=['POST'])
+def feishu_card_action():
+    body = request.get_json(silent=True) or {}
+    challenge = body.get("challenge")
+    if challenge:
+        return jsonify({"challenge": challenge})
+
+    open_id = (((body.get("open_id") or "") or ((body.get("operator") or {}).get("open_id") if isinstance(body.get("operator"), dict) else ""))) or ""
+    action = (body.get("action") or {}).get("value") or {}
+    action_name = action.get("action")
+    if open_id:
+        bind_feishu_user(open_id)
+
+    if action_name == "add_to_queue":
+        plan_code = action.get("planCode")
+        datacenter = action.get("datacenter")
+        options = action.get("options") or []
+        cached_config = {}
+        if not plan_code:
+            message_uuid = action.get("uuid")
+            monitor_obj = get_monitor_for_account()
+            cached_config = getattr(monitor_obj, 'message_uuid_cache', {}).get(message_uuid, {})
+            plan_code = cached_config.get("planCode")
+            datacenter = cached_config.get("datacenter")
+            options = cached_config.get("options") or []
+        message_uuid = str(uuid.uuid4())
+        monitor_obj = get_monitor_for_account()
+        if hasattr(monitor_obj, 'message_uuid_cache'):
+            original_account_ids = cached_config.get("accountIds") if isinstance(cached_config, dict) else None
+            monitor_obj.message_uuid_cache[message_uuid] = {
+                "planCode": plan_code,
+                "datacenter": datacenter,
+                "options": options,
+                "accountIds": original_account_ids or list(accounts.keys()),
+                "forceAccountSelection": cached_config.get("forceAccountSelection", False) if isinstance(cached_config, dict) else False,
+                "timestamp": time.time(),
+                "sourceChannel": "feishu"
+            }
+        acc_list = monitor_obj.message_uuid_cache[message_uuid].get("accountIds") or list(accounts.keys())
+        force_account_selection = bool(monitor_obj.message_uuid_cache[message_uuid].get("forceAccountSelection"))
+        if len(acc_list) > 1 or force_account_selection:
+            actions = []
+            for aid in acc_list:
+                alias = "默认账户" if aid == "default" else ((accounts.get(aid) or {}).get("alias") or aid)
+                actions.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": alias},
+                    "type": "default",
+                    "value": {"action": "order_with_account", "uuid": message_uuid, "accountId": aid}
+                })
+            card = build_feishu_order_card(
+                "选择账户",
+                f"型号: {plan_code}\n机房: {(datacenter or '').upper()}",
+                actions
+            )
+            send_feishu_card(card, open_id=open_id)
+            return jsonify({"toast": {"type": "info", "content": "请选择账户"}})
+
+        chosen_account = acc_list[0] if acc_list else get_account_id_from_request()
+        if chosen_account == "default":
+            chosen_account = get_account_id_from_request()
+        queue_item = {
+            "id": str(uuid.uuid4()),
+            "planCode": plan_code,
+            "datacenters": [datacenter] if datacenter else [],
+            "options": options,
+            "status": "running",
+            "createdAt": datetime.now().isoformat(),
+            "updatedAt": datetime.now().isoformat(),
+            "retryInterval": 30,
+            "retryCount": 0,
+            "lastCheckTime": 0,
+            "fromFeishu": True,
+            "accountId": chosen_account
+        }
+        queue.append(queue_item)
+        save_data()
+        update_stats()
+        return jsonify({"toast": {"type": "success", "content": "已添加到抢购队列"}})
+
+    if action_name == "order_with_account":
+        message_uuid = action.get("uuid")
+        account_id = action.get("accountId")
+        if account_id is None:
+            index = action.get("index")
+            try:
+                index = int(index)
+            except Exception:
+                index = 0
+            acc_ids = list(accounts.keys())
+            account_id = acc_ids[index] if index >= 0 and index < len(acc_ids) else (acc_ids[0] if acc_ids else None)
+        monitor_obj = get_monitor_for_account()
+        cached_config = getattr(monitor_obj, 'message_uuid_cache', {}).get(message_uuid, {})
+        if not cached_config:
+            return jsonify({"toast": {"type": "error", "content": "交互已过期，请重试"}})
+        cached_config["chosenAccount"] = None if account_id == "default" else account_id
+        actions = []
+        for quantity in [1, 2, 3]:
+            for auto_pay in [False, True]:
+                actions.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": f"数量 {quantity} | {'自动支付' if auto_pay else '不自动支付'}"},
+                    "type": "default",
+                    "value": {"action": "confirm_order", "uuid": message_uuid, "quantity": quantity, "autoPay": auto_pay}
+                })
+        card = build_feishu_order_card(
+            "选择数量与支付方式",
+            f"账户: {(accounts.get(account_id) or {}).get('alias') or account_id}\n型号: {cached_config.get('planCode')}\n机房: {(cached_config.get('datacenter') or '').upper()}",
+            actions
+        )
+        send_feishu_card(card, open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择数量与支付方式"}})
+
+    if action_name == "confirm_order":
+        message_uuid = action.get("uuid")
+        quantity = int(action.get("quantity") or 1)
+        auto_pay = bool(action.get("autoPay"))
+        if action.get("quantity") is None and action.get("index") is not None:
+            try:
+                quantity = int(action.get("index"))
+            except Exception:
+                quantity = 1
+        monitor_obj = get_monitor_for_account()
+        cached_config = getattr(monitor_obj, 'message_uuid_cache', {}).get(message_uuid, {})
+        if not cached_config:
+            return jsonify({"toast": {"type": "error", "content": "交互已过期，请重试"}})
+        chosen_account = cached_config.get("chosenAccount") or get_account_id_from_request()
+        queue_item = {
+            "id": str(uuid.uuid4()),
+            "planCode": cached_config.get("planCode"),
+            "datacenters": [cached_config.get("datacenter")] if cached_config.get("datacenter") else [],
+            "options": cached_config.get("options", []),
+            "status": "running",
+            "createdAt": datetime.now().isoformat(),
+            "updatedAt": datetime.now().isoformat(),
+            "retryInterval": 30,
+            "retryCount": 0,
+            "lastCheckTime": 0,
+            "fromFeishu": True,
+            "accountId": chosen_account,
+            "quantity": max(1, min(quantity, 100)),
+            "auto_pay": auto_pay
+        }
+        queue.append(queue_item)
+        save_data()
+        update_stats()
+        return jsonify({"toast": {"type": "success", "content": "已添加到抢购队列"}})
+
+    return jsonify({"toast": {"type": "error", "content": "未知操作"}}), 400
+
+
+@app.route('/api/feishu/binding', methods=['GET'])
+def get_feishu_binding():
+    account_id = get_account_id_from_request() or "default"
+    binding = feishu_users.get(account_id) or {}
+    return jsonify({
+        "success": True,
+        "accountId": account_id,
+        "binding": binding,
+        "bound": bool(binding.get("open_id"))
+    })
+
+
+@app.route('/api/feishu/binding', methods=['DELETE'])
+def clear_feishu_binding():
+    account_id = get_account_id_from_request() or "default"
+    existed = bool(feishu_users.get(account_id))
+    if existed:
+        feishu_users.pop(account_id, None)
+        try:
+            with open(FEISHU_USERS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(feishu_users, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            add_log("WARNING", f"清除飞书绑定后保存失败: {str(e)}", "feishu")
+        add_log("INFO", f"已清除飞书绑定: account={account_id}", "feishu")
+    return jsonify({"success": True, "cleared": existed})
+
+
+@app.route('/api/feishu/test-card', methods=['POST'])
+def send_feishu_test_card():
+    try:
+        account_id = get_account_id_from_request()
+        binding = get_bound_feishu_user(account_id)
+        open_id = binding.get("open_id")
+        if not open_id:
+            return jsonify({"success": False, "error": "当前账户未绑定飞书私聊用户"}), 400
+        if not feishu_client.is_enabled():
+            return jsonify({"success": False, "error": "飞书应用未启用或配置不完整"}), 400
+        card = build_feishu_test_card()
+        ok = send_feishu_card(card, open_id=open_id, account_id=account_id)
+        if not ok:
+            return jsonify({"success": False, "error": "发送飞书测试交互卡片失败"}), 500
+        return jsonify({"success": True, "message": "测试交互卡片已发送到飞书私聊"})
+    except Exception as e:
+        add_log("ERROR", f"发送飞书测试卡片失败: {str(e)}", "feishu")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/servers', methods=['GET'])
 def get_servers():
@@ -4884,7 +5440,7 @@ def handle_pending_match_task(task):
             "config_sniper")
         
         # 发送 Telegram 通知
-        send_telegram_msg(
+        send_bot_message(
             f"🆕 发现新增配置！\n"
             f"源型号: {task['api1_planCode']}\n"
             f"绑定配置: {format_config_display(config['memory'], config['storage'])}\n"
@@ -4910,7 +5466,7 @@ def handle_pending_match_task(task):
             task['match_status'] = 'completed'
             save_config_sniper_tasks()
             add_log("INFO", f"✅ 未匹配任务完成！{task['api1_planCode']} 发现新增并已下单，任务结束", "config_sniper")
-            send_telegram_msg(
+            send_bot_message(
                 f"🎉 待匹配任务完成！\n"
                 f"源型号: {task['api1_planCode']}\n"
                 f"绑定配置: {format_config_display(config['memory'], config['storage'])}\n"
@@ -4961,7 +5517,7 @@ def check_and_queue_plancode(api2_plancode, task, bound_config, client):
                     "config_sniper")
                 
                 # 发送配置有货TG通知
-                send_telegram_msg(
+                send_bot_message(
                     f"📦 配置有货通知！\n"
                     f"源型号: {task['api1_planCode']}\n"
                     f"绑定配置: {format_config_display(bound_config['memory'], bound_config['storage'])}\n"
@@ -5047,7 +5603,7 @@ def check_and_queue_plancode(api2_plancode, task, bound_config, client):
                     "config_sniper")
                 
                 # 发送加入队列TG通知
-                send_telegram_msg(
+                send_bot_message(
                     f"🎯 自动下单触发！\n"
                     f"源型号: {task['api1_planCode']}\n"
                     f"绑定配置: {format_config_display(bound_config['memory'], bound_config['storage'])}\n"
@@ -5085,7 +5641,7 @@ def handle_matched_task(task):
         task['match_status'] = 'completed'
         save_config_sniper_tasks()
         add_log("INFO", f"✅ 任务完成！{task['api1_planCode']} 已加入购买队列，停止监控", "config_sniper")
-        send_telegram_msg(
+        send_bot_message(
             f"🎉 配置狙击任务完成！\n"
             f"源型号: {task['api1_planCode']}\n"
             f"绑定配置: {format_config_display(bound_config['memory'], bound_config['storage'])}\n"
@@ -8697,7 +9253,7 @@ def send_vps_summary_notification(plan_code, datacenters_list, change_type):
         if change_type == "available":
             message += "\n💡 快去抢购吧！"
         
-        result = send_telegram_msg(message)
+        result = send_bot_message(message)
         
         if result:
             add_log("INFO", f"✅ VPS汇总通知发送成功: {plan_code} ({len(datacenters_list)}个机房)", "vps_monitor")
@@ -8777,7 +9333,7 @@ def send_vps_notification(plan_code, datacenter_info, change_type):
         if footer:
             message += f"\n\n{footer}"
         
-        result = send_telegram_msg(message)
+        result = send_bot_message(message)
         
         if result:
             add_log("INFO", f"✅ VPS通知发送成功: {plan_code}@{dc_name}", "vps_monitor")

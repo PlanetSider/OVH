@@ -16,6 +16,11 @@ const SettingsPage = () => {
   const { 
     tgToken,
     tgChatId,
+    feishuEnabled,
+    feishuAppId,
+    feishuAppSecret,
+    feishuVerificationToken,
+    feishuEncryptKey,
     isLoading,
     checkAuthentication
   } = useAPI();
@@ -24,12 +29,18 @@ const SettingsPage = () => {
     apiSecretKey: "",
     tgToken: "",
     tgChatId: "",
+    feishuEnabled: false,
+    feishuAppId: "",
+    feishuAppSecret: "",
+    feishuVerificationToken: "",
+    feishuEncryptKey: "",
     sshKey: ""
   });
   const [isSaving, setIsSaving] = useState(false);
   const [showValues, setShowValues] = useState({
     apiSecretKey: false,
-    tgToken: false
+    tgToken: false,
+    feishuAppSecret: false
   });
   
   // Telegram Webhook 相关状态
@@ -40,15 +51,24 @@ const SettingsPage = () => {
   const [showErrorHistoryDialog, setShowErrorHistoryDialog] = useState(false);
   const [apiKeyValid, setApiKeyValid] = useState<boolean | null>(null);
   const [ovhAuthValid, setOvhAuthValid] = useState<boolean | null>(null);
+  const [feishuBinding, setFeishuBinding] = useState<any>(null);
+  const [isLoadingFeishuBinding, setIsLoadingFeishuBinding] = useState(false);
+  const [isSendingFeishuTestCard, setIsSendingFeishuTestCard] = useState(false);
+  const [isClearingFeishuBinding, setIsClearingFeishuBinding] = useState(false);
 
   useEffect(() => {
     setFormValues(prev => ({
       ...prev,
       apiSecretKey: getApiSecretKey() || "",
       tgToken: tgToken || "",
-      tgChatId: tgChatId || ""
+      tgChatId: tgChatId || "",
+      feishuEnabled: !!feishuEnabled,
+      feishuAppId: feishuAppId || "",
+      feishuAppSecret: feishuAppSecret || "",
+      feishuVerificationToken: feishuVerificationToken || "",
+      feishuEncryptKey: feishuEncryptKey || ""
     }));
-  }, [tgToken, tgChatId]);
+  }, [tgToken, tgChatId, feishuEnabled, feishuAppId, feishuAppSecret, feishuVerificationToken, feishuEncryptKey]);
 
   // 加载后端设置中的 SSH 公钥
   useEffect(() => {
@@ -60,7 +80,12 @@ const SettingsPage = () => {
           ...prev,
           sshKey: cfg.sshKey || "",
           tgToken: cfg.tgToken || prev.tgToken || "",
-          tgChatId: cfg.tgChatId || prev.tgChatId || ""
+          tgChatId: cfg.tgChatId || prev.tgChatId || "",
+          feishuEnabled: !!cfg.feishuEnabled,
+          feishuAppId: cfg.feishuAppId || prev.feishuAppId || "",
+          feishuAppSecret: cfg.feishuAppSecret || prev.feishuAppSecret || "",
+          feishuVerificationToken: cfg.feishuVerificationToken || prev.feishuVerificationToken || "",
+          feishuEncryptKey: cfg.feishuEncryptKey || prev.feishuEncryptKey || ""
         }));
       } catch {}
     })();
@@ -148,6 +173,55 @@ const SettingsPage = () => {
     }
   }, [tgToken]);
 
+  const loadFeishuBinding = async () => {
+    setIsLoadingFeishuBinding(true);
+    try {
+      const response = await api.get('/feishu/binding');
+      setFeishuBinding(response.data || null);
+    } catch {
+      setFeishuBinding(null);
+    } finally {
+      setIsLoadingFeishuBinding(false);
+    }
+  };
+
+  const handleSendFeishuTestCard = async () => {
+    setIsSendingFeishuTestCard(true);
+    try {
+      const response = await api.post('/feishu/test-card');
+      if (response.data?.success) {
+        toast.success(response.data.message || '测试交互卡片已发送');
+      } else {
+        toast.error(response.data?.error || '发送失败');
+      }
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || '发送失败');
+    } finally {
+      setIsSendingFeishuTestCard(false);
+    }
+  };
+
+  const handleClearFeishuBinding = async () => {
+    setIsClearingFeishuBinding(true);
+    try {
+      const response = await api.delete('/feishu/binding');
+      if (response.data?.success) {
+        toast.success(response.data.cleared ? '已清除飞书绑定' : '当前没有飞书绑定');
+        await loadFeishuBinding();
+      } else {
+        toast.error('清除失败');
+      }
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || '清除失败');
+    } finally {
+      setIsClearingFeishuBinding(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFeishuBinding();
+  }, []);
+
   // 计算错误信息辅助函数
   const getErrorInfo = () => {
     if (!webhookInfo?.last_error_date) return null;
@@ -201,10 +275,10 @@ const SettingsPage = () => {
 
   // Handle input changes
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
+    const { name, value, type } = e.target;
     setFormValues({
       ...formValues,
-      [name]: value
+      [name]: type === 'checkbox' ? (e.target as HTMLInputElement).checked : value
     });
   };
 
@@ -238,11 +312,16 @@ const SettingsPage = () => {
         await api.post('/settings', {
           tgToken: formValues.tgToken || undefined,
           tgChatId: formValues.tgChatId || undefined,
+          feishuEnabled: formValues.feishuEnabled,
+          feishuAppId: formValues.feishuAppId || undefined,
+          feishuAppSecret: formValues.feishuAppSecret || undefined,
+          feishuVerificationToken: formValues.feishuVerificationToken || undefined,
+          feishuEncryptKey: formValues.feishuEncryptKey || undefined,
           sshKey: formValues.sshKey || undefined
         });
-        toast.success("访问密码与Telegram配置已保存，页面将刷新");
+        toast.success("访问密码与通知配置已保存，页面将刷新");
       } catch (err) {
-        toast.error("保存Telegram配置失败");
+        toast.error("保存通知配置失败");
       }
       setTimeout(() => { window.location.reload(); }, 800);
       // 无论是否有OVH配置，确保SSH设置已同步保存
@@ -567,6 +646,118 @@ const SettingsPage = () => {
                           </p>
                         </div>
                       )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="cyber-grid-line pt-4">
+                <h2 className="text-xl font-bold mb-4">🪽 飞书应用机器人设置 (可选)</h2>
+                <div className="space-y-4">
+                  <label className="flex items-center gap-2 text-sm text-cyber-text">
+                    <input
+                      type="checkbox"
+                      name="feishuEnabled"
+                      checked={formValues.feishuEnabled}
+                      onChange={handleChange}
+                      className="form-checkbox cyber-input h-4 w-4"
+                    />
+                    启用飞书应用机器人通道
+                  </label>
+                  <div>
+                    <label className="block text-cyber-muted mb-1">飞书 App ID</label>
+                    <input
+                      type="text"
+                      name="feishuAppId"
+                      value={formValues.feishuAppId}
+                      onChange={handleChange}
+                      className="cyber-input w-full"
+                      placeholder="cli_xxxxxxxxxxxxx"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-cyber-muted mb-1">飞书 App Secret</label>
+                    <div className="relative">
+                      <input
+                        type={showValues.feishuAppSecret ? 'text' : 'password'}
+                        name="feishuAppSecret"
+                        value={formValues.feishuAppSecret}
+                        onChange={handleChange}
+                        className="cyber-input w-full pr-10"
+                        placeholder="应用密钥"
+                      />
+                      <button type="button" onClick={() => toggleShowValue('feishuAppSecret' as keyof typeof showValues)} className="absolute inset-y-0 right-0 px-3 text-cyber-muted hover:text-cyber-accent">
+                        {showValues.feishuAppSecret ? '🙈' : '👁️'}
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-cyber-muted mb-1">校验 Token</label>
+                    <input
+                      type="text"
+                      name="feishuVerificationToken"
+                      value={formValues.feishuVerificationToken}
+                      onChange={handleChange}
+                      className="cyber-input w-full"
+                      placeholder="事件订阅 Verification Token"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-cyber-muted mb-1">Encrypt Key</label>
+                    <input
+                      type="text"
+                      name="feishuEncryptKey"
+                      value={formValues.feishuEncryptKey}
+                      onChange={handleChange}
+                      className="cyber-input w-full"
+                      placeholder="事件订阅 Encrypt Key（可选）"
+                    />
+                  </div>
+                  <div className="bg-cyber-grid/10 border border-cyber-accent/20 rounded-lg p-3 text-xs text-cyber-muted space-y-1">
+                    <p>事件回调地址：<code>{window.location.origin}/api/feishu/events</code></p>
+                    <p>卡片回调地址：<code>{window.location.origin}/api/feishu/card-action</code></p>
+                    <p>私聊用户首次给机器人发消息后，系统会自动绑定该用户用于后续飞书通知。</p>
+                  </div>
+                  <div className="bg-cyber-dark/30 border border-cyber-accent/10 rounded-lg p-3 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm text-cyber-text font-medium">当前账户飞书绑定</div>
+                        <div className="text-xs text-cyber-muted mt-1">
+                          {isLoadingFeishuBinding ? '加载中...' : feishuBinding?.bound ? '已绑定飞书私聊用户' : '未绑定飞书私聊用户'}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={loadFeishuBinding}
+                        className="cyber-button px-3 text-xs"
+                        disabled={isLoadingFeishuBinding}
+                      >
+                        刷新绑定
+                      </button>
+                    </div>
+                    {feishuBinding?.bound && (
+                      <div className="text-xs text-cyber-muted space-y-1">
+                        <p>Open ID：<code>{feishuBinding.binding?.open_id}</code></p>
+                        {feishuBinding.binding?.user_name && <p>用户标识：<code>{feishuBinding.binding.user_name}</code></p>}
+                      </div>
+                    )}
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSendFeishuTestCard}
+                        className="cyber-button flex-1 text-xs sm:text-sm"
+                        disabled={isSendingFeishuTestCard || !feishuBinding?.bound || !formValues.feishuEnabled}
+                      >
+                        {isSendingFeishuTestCard ? '发送中...' : '发送飞书测试交互卡片'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearFeishuBinding}
+                        className="cyber-button px-3 sm:px-4 text-xs sm:text-sm bg-red-900/30 border-red-700/40 text-red-300 hover:bg-red-800/40 hover:border-red-600/50 hover:text-red-200"
+                        disabled={isClearingFeishuBinding}
+                      >
+                        {isClearingFeishuBinding ? '清除中...' : '清除绑定'}
+                      </button>
                     </div>
                   </div>
                 </div>

@@ -16,6 +16,7 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
   const isMobile = useIsMobile();
   const currentZone = (accounts.find((acc: any) => acc?.id === currentAccountId)?.zone) || '';
   const [appVersion, setAppVersion] = useState<string>('-');
+  const [feishuBound, setFeishuBound] = useState<boolean | null>(null);
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -29,6 +30,23 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
     })();
     return () => { mounted = false; };
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const r = await api.get('/feishu/binding');
+        if (mounted) {
+          setFeishuBound(!!r.data?.bound);
+        }
+      } catch {
+        if (mounted) {
+          setFeishuBound(null);
+        }
+      }
+    })();
+    return () => { mounted = false; };
+  }, [currentAccountId]);
   
   const menuItems = [
     { path: "/", icon: "bar-chart-2", label: "仪表盘" },
@@ -211,6 +229,12 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
                 <span className="text-cyber-muted text-xs">{appVersion}</span>
               </div>
             </div>
+          </div>
+          <div className="text-xs flex items-center justify-between p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
+            <span className="text-cyber-muted">飞书私聊</span>
+            <span className={`${feishuBound ? 'text-green-400' : feishuBound === false ? 'text-yellow-400' : 'text-cyber-muted'}`}>
+              {feishuBound ? '已绑定' : feishuBound === false ? '未绑定' : '未知'}
+            </span>
           </div>
           <div>
             <select
