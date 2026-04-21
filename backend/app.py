@@ -837,6 +837,28 @@ def build_status_message(account_id):
     return '\n'.join(lines)
 
 
+def get_server_plan_meta(plan_code):
+    server = next((s for s in server_plans if s.get('planCode') == plan_code), None)
+    if not server:
+        return {
+            'name': plan_code,
+            'cpu': 'N/A',
+            'memory': 'N/A',
+            'storage': 'N/A'
+        }
+    return {
+        'name': server.get('name') or plan_code,
+        'cpu': server.get('cpu') or 'N/A',
+        'memory': server.get('memory') or 'N/A',
+        'storage': server.get('storage') or 'N/A'
+    }
+
+
+def format_plan_summary(plan_code):
+    meta = get_server_plan_meta(plan_code)
+    return f"{meta['name']} | 型号: {plan_code} | 内存: {meta['memory']} | 硬盘: {meta['storage']}"
+
+
 def build_monitor_message(account_id):
     if not account_id or account_id not in accounts:
         return "当前没有可用的 API 账户。"
@@ -847,7 +869,8 @@ def build_monitor_message(account_id):
     for sub in subscriptions:
         dcs = sub.get('datacenters') or []
         dc_text = ','.join([dc.upper() for dc in dcs]) if dcs else '全部机房'
-        lines.append(f"- {sub.get('planCode')} | 机房: {dc_text} | 自动下单: {'是' if sub.get('autoOrder') else '否'}")
+        plan_summary = format_plan_summary(sub.get('planCode'))
+        lines.append(f"- {plan_summary} | 机房: {dc_text} | 自动下单: {'是' if sub.get('autoOrder') else '否'}")
     return '\n'.join(lines)
 
 
@@ -861,7 +884,8 @@ def build_autobuy_message(account_id):
     for item in items:
         dcs = item.get('datacenters') or ([item.get('datacenter')] if item.get('datacenter') else [])
         dc_text = ' > '.join([str(dc).upper() for dc in dcs if dc]) if dcs else '全部机房'
-        lines.append(f"- {item.get('planCode')} | 机房: {dc_text} | 状态: {item.get('status')} | 数量: {item.get('quantity', 1)} | 自动支付: {'是' if item.get('auto_pay') else '否'}")
+        plan_summary = format_plan_summary(item.get('planCode'))
+        lines.append(f"- {plan_summary} | 机房: {dc_text} | 状态: {item.get('status')} | 数量: {item.get('quantity', 1)} | 自动支付: {'是' if item.get('auto_pay') else '否'}")
     return '\n'.join(lines)
 
 
@@ -890,7 +914,9 @@ def switch_bot_account(channel: str, user_key: str, email=None):
     set_bot_selected_account(channel, user_key, chosen_account)
     last_selected_account_id = chosen_account
     acc = accounts.get(chosen_account) or {}
-    return True, f"已切换到 API 账户: {acc.get('alias') or chosen_account}"
+    zone = acc.get('zone') or 'N/A'
+    endpoint = acc.get('endpoint') or 'N/A'
+    return True, f"已切换到 API 账户: {(acc.get('alias') or chosen_account)} | 区域: {zone} | 节点: {endpoint}"
 
 
 def dispatch_bot_command(channel: str, user_key: str, text: str):
