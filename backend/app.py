@@ -98,6 +98,8 @@ FEISHU_USERS_FILE = os.path.join(DATA_DIR, "feishu_users.json")
 BOT_USER_SELECTIONS_FILE = os.path.join(DATA_DIR, "bot_user_account_selections.json")
 SERVER_ALIASES_FILE = os.path.join(DATA_DIR, "server_aliases.json")
 BOT_PENDING_ACTIONS_FILE = os.path.join(DATA_DIR, "bot_pending_actions.json")
+SERVERS_SNAPSHOT_FILE = os.path.join(DATA_DIR, "servers_snapshot.json")
+AVAILABILITY_SNAPSHOT_FILE = os.path.join(DATA_DIR, "availability_snapshot.json")
 
 config = {
     "tgToken": "",
@@ -107,6 +109,12 @@ config = {
     "feishuAppSecret": "",
     "feishuVerificationToken": "",
     "feishuEncryptKey": "",
+    "serversAutoRefreshEnabled": False,
+    "serversAutoRefreshIntervalSeconds": 3600,
+    "availabilityAutoRefreshEnabled": False,
+    "availabilityAutoRefreshIntervalSeconds": 3600,
+    "serversNewServerNotifyEnabled": False,
+    "availabilityNewServerNotifyEnabled": False,
     "sshKey": "",
 }
 
@@ -146,6 +154,10 @@ bot_user_account_selections = {}
 server_aliases = {}
 bot_pending_actions = {}
 processed_bot_messages = {}
+servers_snapshot = {"updatedAt": None, "items": {}}
+availability_snapshot = {"updatedAt": None, "items": {}}
+servers_auto_refresh_running = False
+availability_auto_refresh_running = False
 
 # 全局删除任务ID集合（用于立即停止后台线程处理）
 deleted_task_ids = set()
@@ -195,7 +207,7 @@ feishu_client = FeishuClient(get_feishu_config, lambda level, message, source="f
 
 # Load data from files if they exist
 def load_data():
-    global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts, feishu_users, bot_user_account_selections, server_aliases, bot_pending_actions
+    global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts, feishu_users, bot_user_account_selections, server_aliases, bot_pending_actions, servers_snapshot, availability_snapshot
     
     if os.path.exists(CONFIG_FILE):
         try:
@@ -471,6 +483,26 @@ def load_data():
                     print(f"警告: {BOT_PENDING_ACTIONS_FILE}文件为空")
         except json.JSONDecodeError:
             print(f"警告: {BOT_PENDING_ACTIONS_FILE}文件格式不正确")
+
+    if os.path.exists(SERVERS_SNAPSHOT_FILE):
+        try:
+            with open(SERVERS_SNAPSHOT_FILE, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    servers_snapshot = data if isinstance(data, dict) else {"updatedAt": None, "items": {}}
+        except json.JSONDecodeError:
+            print(f"警告: {SERVERS_SNAPSHOT_FILE}文件格式不正确")
+
+    if os.path.exists(AVAILABILITY_SNAPSHOT_FILE):
+        try:
+            with open(AVAILABILITY_SNAPSHOT_FILE, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    availability_snapshot = data if isinstance(data, dict) else {"updatedAt": None, "items": {}}
+        except json.JSONDecodeError:
+            print(f"警告: {AVAILABILITY_SNAPSHOT_FILE}文件格式不正确")
     
     # Update stats
     update_stats()
@@ -499,6 +531,10 @@ def save_data(do_flush=True):
             json.dump(server_aliases, f, ensure_ascii=False, indent=2)
         with open(BOT_PENDING_ACTIONS_FILE, 'w', encoding='utf-8') as f:
             json.dump(bot_pending_actions, f, ensure_ascii=False, indent=2)
+        with open(SERVERS_SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(servers_snapshot, f, ensure_ascii=False, indent=2)
+        with open(AVAILABILITY_SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(availability_snapshot, f, ensure_ascii=False, indent=2)
         try:
             acc_queue_map = {}
             for item in queue:
@@ -1209,6 +1245,255 @@ def build_tg_inline_keyboard(buttons, row_size=2):
     return {'inline_keyboard': inline_keyboard}
 
 
+def validate_refresh_interval(value):
+    try:
+        seconds = int(value)
+    except Exception:
+        seconds = 3600
+    return max(3600, min(seconds, 86400))
+
+
+def get_servers_snapshot_items(servers_list):
+    items = {}
+    for server in servers_list or []:
+        plan_code = server.get('planCode')
+        if not plan_code:
+            continue
+        datacenters = []
+        for dc in server.get('datacenters') or []:
+            code = dc.get('datacenter') if isinstance(dc, dict) else None
+            if code:
+                datacenters.append(code)
+        items[plan_code] = {
+            'planCode': plan_code,
+            'name': server.get('name', plan_code),
+            'cpu': server.get('cpu', 'N/A'),
+            'memory': server.get('memory', 'N/A'),
+            'storage': server.get('storage', 'N/A'),
+            'datacenters': sorted(list(set(datacenters)))
+        }
+    return items
+
+
+def get_availability_snapshot_items(availabilities):
+    items = {}
+    for item in availabilities or []:
+        key = item.get('fqn') or f"{item.get('planCode', '')}|{item.get('memory', '')}|{item.get('storage', '')}"
+        if not key:
+            continue
+        datacenters = []
+        for dc in item.get('datacenters') or []:
+            code = dc.get('datacenter') if isinstance(dc, dict) else None
+            if code and dc.get('availability') not in ['unavailable', 'unknown']:
+                datacenters.append(code)
+        items[key] = {
+            'fqn': item.get('fqn', ''),
+            'planCode': item.get('planCode', ''),
+            'server': item.get('server', item.get('planCode', '未知服务器')),
+            'memory': item.get('memory', 'N/A'),
+            'storage': item.get('storage', 'N/A'),
+            'datacenters': sorted(list(set(datacenters)))
+        }
+    return items
+
+
+def diff_new_items(previous_items, current_items):
+    previous_keys = set((previous_items or {}).keys())
+    current_keys = set((current_items or {}).keys())
+    new_keys = current_keys - previous_keys
+    return [current_items[k] for k in new_keys]
+
+
+def build_new_availability_server_message(item):
+    dcs = ', '.join([dc.upper() for dc in item.get('datacenters') or []]) or '无'
+    return (
+        "🆕 实时可用性发现新增服务器\n\n"
+        f"名称: {item.get('server', '未知服务器')}\n"
+        f"内存: {item.get('memory', 'N/A')}\n"
+        f"硬盘: {item.get('storage', 'N/A')}\n"
+        f"可用机房: {dcs}"
+    )
+
+
+def get_new_server_context(uuid_value):
+    monitor_obj = get_monitor_for_account()
+    if not (uuid_value and monitor_obj and hasattr(monitor_obj, 'message_uuid_cache')):
+        return None
+    ctx = getattr(monitor_obj, 'message_uuid_cache', {}).get(uuid_value)
+    if not ctx:
+        return None
+    timestamp = ctx.get('timestamp', 0)
+    ttl = getattr(monitor_obj, 'message_uuid_cache_ttl', 24 * 3600)
+    if time.time() - timestamp > ttl:
+        try:
+            del monitor_obj.message_uuid_cache[uuid_value]
+        except Exception:
+            pass
+        return None
+    return ctx
+
+
+def save_new_server_context(uuid_value, ctx):
+    monitor_obj = get_monitor_for_account()
+    if monitor_obj and hasattr(monitor_obj, 'message_uuid_cache'):
+        monitor_obj.message_uuid_cache[uuid_value] = ctx
+
+
+def build_new_server_buttons(channel: str, uuid_value: str, action_name: str, options: list):
+    buttons = []
+    for option in options:
+        if isinstance(option, dict):
+            label = str(option.get('label') or option.get('value') or '')
+            value = option.get('value')
+        else:
+            label = str(option)
+            value = option
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({'a': action_name, 'u': uuid_value, 'value': value}, ensure_ascii=False, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {'action': action_name, 'uuid': uuid_value, 'value': value}
+            })
+    return buttons
+
+
+def build_new_server_action_buttons(channel: str, uuid_value: str):
+    options = [
+        {'label': '加入监控', 'value': 'monitor'},
+        {'label': '加入抢购', 'value': 'autobuy'}
+    ]
+    return build_new_server_buttons(channel, uuid_value, 'new_server_select_action', options)
+
+
+def build_new_server_autopay_buttons(channel: str, uuid_value: str):
+    options = [
+        {'label': '自动支付', 'value': '1'},
+        {'label': '不自动支付', 'value': '0'}
+    ]
+    return build_new_server_buttons(channel, uuid_value, 'new_server_select_autopay', options)
+
+
+def build_new_server_retry_warning_buttons(channel: str, uuid_value: str):
+    options = [
+        {'label': '确定', 'value': 'confirm'},
+        {'label': '修改间隔时间', 'value': 'modify'}
+    ]
+    return build_new_server_buttons(channel, uuid_value, 'new_server_retry_short_confirm', options)
+
+
+def build_new_server_step_message(ctx, step_name):
+    base = (
+        f"名称: {ctx.get('serverName', '未知服务器')}\n"
+        f"型号: {ctx.get('planCode', 'N/A')}\n"
+        f"可用机房: {', '.join([dc.upper() for dc in ctx.get('datacenterOptions') or []]) or '无'}"
+    )
+    titles = {
+        'memory': '请选择内存',
+        'storage': '请选择硬盘',
+        'datacenter': '请选择可用数据中心',
+        'action': '请选择加入监控还是抢购',
+        'autopay': '请选择是否自动支付',
+        'retry_warning': '间隔时间过短可能导致API过载，建议设置为 30 秒或更长\n请选择：确定 或 修改间隔时间'
+    }
+    return f"{titles.get(step_name, '请选择')}\n\n{base}"
+
+
+def build_new_server_card(channel: str, uuid_value: str, ctx, step_name, buttons):
+    message = build_new_server_step_message(ctx, step_name)
+    if channel == 'telegram':
+        return {'text': message, 'reply_markup': build_tg_inline_keyboard(buttons, row_size=2)}
+    return {'text': message, 'card': build_feishu_order_card('新增服务器交互', message, buttons)}
+
+
+def create_monitor_from_new_server(channel: str, user_key: str, ctx):
+    account_id = get_effective_bot_account(channel, user_key)
+    if not account_id:
+        return '当前没有可用的 API 账户。'
+    mon = get_monitor_for_account(account_id)
+    plan_code = ctx.get('planCode')
+    datacenter = ctx.get('selectedDatacenter')
+    server_name = ctx.get('serverName')
+    mon.add_subscription(
+        plan_code,
+        [datacenter] if datacenter else [],
+        True,
+        False,
+        server_name,
+        None,
+        None,
+        False,
+        0
+    )
+    save_subscriptions(account_id)
+    return f"已将新增服务器加入监控：{server_name} | 型号: {plan_code} | 机房: {(datacenter or '').upper()}"
+
+
+def create_queue_from_new_server(channel: str, user_key: str, ctx):
+    account_id = get_effective_bot_account(channel, user_key)
+    if not account_id:
+        return '当前没有可用的 API 账户。'
+    queue_item = {
+        'id': str(uuid.uuid4()),
+        'planCode': ctx.get('planCode'),
+        'datacenters': [ctx.get('selectedDatacenter')] if ctx.get('selectedDatacenter') else [],
+        'options': [],
+        'status': 'running',
+        'createdAt': datetime.now().isoformat(),
+        'updatedAt': datetime.now().isoformat(),
+        'retryInterval': int(ctx.get('selectedRetryInterval') or 30),
+        'retryCount': 0,
+        'lastCheckTime': 0,
+        'accountId': account_id,
+        'quantity': max(1, min(int(ctx.get('selectedQuantity') or 1), 100)),
+        'auto_pay': bool(int(ctx.get('selectedAutoPay') or 0)),
+        'fromFeishu': channel == 'feishu',
+        'fromTelegram': channel == 'telegram'
+    }
+    queue.append(queue_item)
+    save_data()
+    update_stats()
+    return (
+        f"已将新增服务器加入抢购队列：{ctx.get('serverName')}\n"
+        f"型号: {ctx.get('planCode')}\n"
+        f"机房: {(ctx.get('selectedDatacenter') or '').upper()}\n"
+        f"数量: {queue_item['quantity']}\n"
+        f"自动支付: {'是' if queue_item['auto_pay'] else '否'}\n"
+        f"重试间隔: {queue_item['retryInterval']} 秒"
+    )
+
+
+def save_servers_snapshot_data(items):
+    global servers_snapshot
+    servers_snapshot = {
+        'updatedAt': datetime.now().isoformat(),
+        'items': items
+    }
+    try:
+        with open(SERVERS_SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(servers_snapshot, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        add_log('WARNING', f"保存服务器列表快照失败: {str(e)}", 'auto_refresh')
+
+
+def save_availability_snapshot_data(items):
+    global availability_snapshot
+    availability_snapshot = {
+        'updatedAt': datetime.now().isoformat(),
+        'items': items
+    }
+    try:
+        with open(AVAILABILITY_SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(availability_snapshot, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        add_log('WARNING', f"保存实时可用性快照失败: {str(e)}", 'auto_refresh')
+
+
 def build_alias_list_message():
     if not server_aliases:
         return "当前没有已绑定的服务器别名。"
@@ -1236,6 +1521,126 @@ def build_alias_list_message():
             lines.append(f"[{index}] {item['alias']}")
             lines.append(f"  服务名 : {item['serviceName']}")
     return '\n'.join(lines).strip()
+
+
+def build_new_server_discovery_message(item):
+    dcs = ', '.join([dc.upper() for dc in item.get('datacenters') or []]) or '无'
+    return (
+        "🆕 服务器列表发现新增服务器\n\n"
+        f"名称: {item.get('name', '未知服务器')}\n"
+        f"型号: {item.get('planCode', 'N/A')}\n"
+        f"内存: {item.get('memory', 'N/A')}\n"
+        f"硬盘: {item.get('storage', 'N/A')}\n"
+        f"可用机房: {dcs}"
+    )
+
+
+def build_new_server_memory_buttons(channel: str, message_uuid: str, options: list):
+    buttons = []
+    for value in options:
+        if channel == 'telegram':
+            buttons.append({
+                'text': str(value),
+                'callback_data': json.dumps({'a': 'new_server_select_memory', 'u': message_uuid, 'value': value}, ensure_ascii=False, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': str(value)},
+                'type': 'default',
+                'value': {'action': 'new_server_select_memory', 'uuid': message_uuid, 'value': value}
+            })
+    return buttons
+
+
+def run_servers_auto_refresh_once():
+    global server_plans
+    client = get_ovh_client()
+    if not client:
+        return
+    api_servers = load_server_list()
+    if not api_servers:
+        return
+    server_plans = api_servers
+    server_list_cache['data'] = api_servers
+    server_list_cache['timestamp'] = time.time()
+    current_items = get_servers_snapshot_items(api_servers)
+    previous_items = (servers_snapshot or {}).get('items') or {}
+    new_items = diff_new_items(previous_items, current_items)
+    save_servers_snapshot_data(current_items)
+    save_data()
+    if config.get('serversNewServerNotifyEnabled'):
+        for item in new_items:
+            message_uuid = str(uuid.uuid4())
+            monitor_obj = get_monitor_for_account()
+            memory_options = [item.get('memory', 'N/A')]
+            storage_options = [item.get('storage', 'N/A')]
+            if hasattr(monitor_obj, 'message_uuid_cache'):
+                monitor_obj.message_uuid_cache[message_uuid] = {
+                    'type': 'new_server_discovery',
+                    'source': 'servers_list',
+                    'planCode': item.get('planCode'),
+                    'serverName': item.get('name'),
+                    'memoryOptions': memory_options,
+                    'storageOptions': storage_options,
+                    'datacenterOptions': item.get('datacenters') or [],
+                    'selectedMemory': None,
+                    'selectedStorage': None,
+                    'selectedDatacenter': None,
+                    'selectedAction': None,
+                    'selectedQuantity': None,
+                    'selectedAutoPay': None,
+                    'selectedRetryInterval': None,
+                    'timestamp': time.time()
+                }
+            tg_buttons = build_new_server_memory_buttons('telegram', message_uuid, memory_options)
+            send_bot_message(build_new_server_discovery_message(item), reply_markup=build_tg_inline_keyboard(tg_buttons, row_size=2))
+
+
+def run_availability_auto_refresh_once():
+    endpoint = config.get('endpoint', 'ovh-eu')
+    base_url = get_api_base_url_for(endpoint)
+    api_url = f"{base_url}/v1/dedicated/server/datacenter/availabilities"
+    response = requests.get(api_url, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    current_items = get_availability_snapshot_items(data if isinstance(data, list) else [])
+    previous_items = (availability_snapshot or {}).get('items') or {}
+    new_items = diff_new_items(previous_items, current_items)
+    save_availability_snapshot_data(current_items)
+    if config.get('availabilityNewServerNotifyEnabled'):
+        for item in new_items:
+            send_bot_message(build_new_availability_server_message(item))
+
+
+def servers_auto_refresh_loop():
+    global servers_auto_refresh_running
+    while servers_auto_refresh_running:
+        try:
+            if config.get('serversAutoRefreshEnabled'):
+                run_servers_auto_refresh_once()
+        except Exception as e:
+            add_log('ERROR', f"服务器列表自动刷新失败: {str(e)}", 'auto_refresh')
+        interval = validate_refresh_interval(config.get('serversAutoRefreshIntervalSeconds', 3600))
+        for _ in range(interval):
+            if not servers_auto_refresh_running:
+                break
+            time.sleep(1)
+
+
+def availability_auto_refresh_loop():
+    global availability_auto_refresh_running
+    while availability_auto_refresh_running:
+        try:
+            if config.get('availabilityAutoRefreshEnabled'):
+                run_availability_auto_refresh_once()
+        except Exception as e:
+            add_log('ERROR', f"实时可用性自动刷新失败: {str(e)}", 'auto_refresh')
+        interval = validate_refresh_interval(config.get('availabilityAutoRefreshIntervalSeconds', 3600))
+        for _ in range(interval):
+            if not availability_auto_refresh_running:
+                break
+            time.sleep(1)
 
 
 def build_alias_list_message():
@@ -1407,6 +1812,42 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
     effective_account = get_effective_bot_account(channel, user_key)
 
     pending = get_bot_pending_action(channel, user_key)
+    if pending.get('type') == 'new_server_quantity_input':
+        try:
+            quantity = int(normalized)
+        except Exception:
+            return {'text': '请输入有效的数量（1-100）。'}
+        if quantity < 1 or quantity > 100:
+            return {'text': '数量必须在 1-100 之间。'}
+        ctx = get_new_server_context(pending.get('uuid'))
+        if not ctx:
+            clear_bot_pending_action(channel, user_key)
+            return {'text': '交互已过期，请等待下一次新增服务器通知。'}
+        ctx['selectedQuantity'] = quantity
+        save_new_server_context(pending.get('uuid'), ctx)
+        clear_bot_pending_action(channel, user_key)
+        buttons = build_new_server_autopay_buttons(channel, pending.get('uuid'))
+        return build_new_server_card(channel, pending.get('uuid'), ctx, 'autopay', buttons)
+
+    if pending.get('type') == 'new_server_retry_interval_input':
+        try:
+            retry_interval = int(normalized)
+        except Exception:
+            return {'text': '请输入有效的重试间隔（1-3600秒）。'}
+        if retry_interval < 1 or retry_interval > 3600:
+            return {'text': '重试间隔必须在 1-3600 秒之间。'}
+        ctx = get_new_server_context(pending.get('uuid'))
+        if not ctx:
+            clear_bot_pending_action(channel, user_key)
+            return {'text': '交互已过期，请等待下一次新增服务器通知。'}
+        ctx['selectedRetryInterval'] = retry_interval
+        save_new_server_context(pending.get('uuid'), ctx)
+        clear_bot_pending_action(channel, user_key)
+        if retry_interval < 15:
+            buttons = build_new_server_retry_warning_buttons(channel, pending.get('uuid'))
+            return build_new_server_card(channel, pending.get('uuid'), ctx, 'retry_warning', buttons)
+        return {'text': create_queue_from_new_server(channel, user_key, ctx)}
+
     if pending.get('type') == 'alias_select':
         try:
             choice = int(normalized)
@@ -3742,6 +4183,18 @@ def save_settings():
         config["feishuVerificationToken"] = data.get("feishuVerificationToken") or ""
     if data.get("feishuEncryptKey") is not None:
         config["feishuEncryptKey"] = data.get("feishuEncryptKey") or ""
+    if data.get("serversAutoRefreshEnabled") is not None:
+        config["serversAutoRefreshEnabled"] = bool(data.get("serversAutoRefreshEnabled"))
+    if data.get("serversAutoRefreshIntervalSeconds") is not None:
+        config["serversAutoRefreshIntervalSeconds"] = validate_refresh_interval(data.get("serversAutoRefreshIntervalSeconds"))
+    if data.get("availabilityAutoRefreshEnabled") is not None:
+        config["availabilityAutoRefreshEnabled"] = bool(data.get("availabilityAutoRefreshEnabled"))
+    if data.get("availabilityAutoRefreshIntervalSeconds") is not None:
+        config["availabilityAutoRefreshIntervalSeconds"] = validate_refresh_interval(data.get("availabilityAutoRefreshIntervalSeconds"))
+    if data.get("serversNewServerNotifyEnabled") is not None:
+        config["serversNewServerNotifyEnabled"] = bool(data.get("serversNewServerNotifyEnabled"))
+    if data.get("availabilityNewServerNotifyEnabled") is not None:
+        config["availabilityNewServerNotifyEnabled"] = bool(data.get("availabilityNewServerNotifyEnabled"))
     if data.get("sshKey") is not None:
         config["sshKey"] = data.get("sshKey") or ""
 
@@ -4796,6 +5249,125 @@ def telegram_webhook():
                         "reply_to_message_id": message_id
                     }, 10)
                 return jsonify({"ok": True})
+
+            elif action == 'new_server_select_memory':
+                uuid_value = callback_data_obj.get('u') or callback_data_obj.get('uuid')
+                value = callback_data_obj.get('value')
+                ctx = get_new_server_context(uuid_value)
+                if not ctx:
+                    return jsonify({"ok": False, "error": 'expired'}), 400
+                ctx['selectedMemory'] = value
+                save_new_server_context(uuid_value, ctx)
+                buttons = build_new_server_buttons('telegram', uuid_value, 'new_server_select_storage', ctx.get('storageOptions') or [])
+                if tg_token:
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": build_new_server_step_message(ctx, 'storage'),
+                        "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'new_server_select_storage':
+                uuid_value = callback_data_obj.get('u') or callback_data_obj.get('uuid')
+                value = callback_data_obj.get('value')
+                ctx = get_new_server_context(uuid_value)
+                if not ctx:
+                    return jsonify({"ok": False, "error": 'expired'}), 400
+                ctx['selectedStorage'] = value
+                save_new_server_context(uuid_value, ctx)
+                buttons = build_new_server_buttons('telegram', uuid_value, 'new_server_select_datacenter', ctx.get('datacenterOptions') or [])
+                if tg_token:
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": build_new_server_step_message(ctx, 'datacenter'),
+                        "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'new_server_select_datacenter':
+                uuid_value = callback_data_obj.get('u') or callback_data_obj.get('uuid')
+                value = callback_data_obj.get('value')
+                ctx = get_new_server_context(uuid_value)
+                if not ctx:
+                    return jsonify({"ok": False, "error": 'expired'}), 400
+                ctx['selectedDatacenter'] = value
+                save_new_server_context(uuid_value, ctx)
+                buttons = build_new_server_action_buttons('telegram', uuid_value)
+                if tg_token:
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": build_new_server_step_message(ctx, 'action'),
+                        "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'new_server_select_action':
+                uuid_value = callback_data_obj.get('u') or callback_data_obj.get('uuid')
+                value = callback_data_obj.get('value')
+                ctx = get_new_server_context(uuid_value)
+                if not ctx:
+                    return jsonify({"ok": False, "error": 'expired'}), 400
+                ctx['selectedAction'] = value
+                save_new_server_context(uuid_value, ctx)
+                if value == 'monitor':
+                    if tg_token:
+                        _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                            "chat_id": chat_id,
+                            "text": create_monitor_from_new_server('telegram', str(user_id), ctx),
+                            "reply_to_message_id": message_id
+                        }, 10)
+                    return jsonify({"ok": True})
+                set_bot_pending_action('telegram', str(user_id), {'type': 'new_server_quantity_input', 'uuid': uuid_value})
+                if tg_token:
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": '请直接回复抢购数量（1-100）',
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'new_server_select_autopay':
+                uuid_value = callback_data_obj.get('u') or callback_data_obj.get('uuid')
+                value = callback_data_obj.get('value')
+                ctx = get_new_server_context(uuid_value)
+                if not ctx:
+                    return jsonify({"ok": False, "error": 'expired'}), 400
+                ctx['selectedAutoPay'] = value
+                save_new_server_context(uuid_value, ctx)
+                set_bot_pending_action('telegram', str(user_id), {'type': 'new_server_retry_interval_input', 'uuid': uuid_value})
+                if tg_token:
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": '请直接回复抢购失败后的重试间隔，单位为秒（1-3600）',
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'new_server_retry_short_confirm':
+                uuid_value = callback_data_obj.get('u') or callback_data_obj.get('uuid')
+                value = callback_data_obj.get('value')
+                ctx = get_new_server_context(uuid_value)
+                if not ctx:
+                    return jsonify({"ok": False, "error": 'expired'}), 400
+                if value == 'modify':
+                    set_bot_pending_action('telegram', str(user_id), {'type': 'new_server_retry_interval_input', 'uuid': uuid_value})
+                    if tg_token:
+                        _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                            "chat_id": chat_id,
+                            "text": '请重新回复抢购失败后的重试间隔，单位为秒（1-3600）',
+                            "reply_to_message_id": message_id
+                        }, 10)
+                    return jsonify({"ok": True})
+                if tg_token:
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": create_queue_from_new_server('telegram', str(user_id), ctx),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
             
             elif action == "owc":
                 message_uuid = callback_data_obj.get("u") or callback_data_obj.get("uuid")
@@ -5094,6 +5666,80 @@ def feishu_card_action():
         service_name = action.get('serviceName')
         existed = remove_server_alias(account_id, service_name)
         return jsonify({"toast": {"type": "success", "content": ("已移除服务器别名" if existed else "该服务器当前没有别名")}})
+
+    if action_name == 'new_server_select_memory':
+        uuid_value = action.get('uuid')
+        value = action.get('value')
+        ctx = get_new_server_context(uuid_value)
+        if not ctx:
+            return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
+        ctx['selectedMemory'] = value
+        save_new_server_context(uuid_value, ctx)
+        buttons = build_new_server_buttons('feishu', uuid_value, 'new_server_select_storage', ctx.get('storageOptions') or [])
+        send_feishu_card(build_feishu_order_card('新增服务器交互', build_new_server_step_message(ctx, 'storage'), buttons), open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择硬盘"}})
+
+    if action_name == 'new_server_select_storage':
+        uuid_value = action.get('uuid')
+        value = action.get('value')
+        ctx = get_new_server_context(uuid_value)
+        if not ctx:
+            return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
+        ctx['selectedStorage'] = value
+        save_new_server_context(uuid_value, ctx)
+        buttons = build_new_server_buttons('feishu', uuid_value, 'new_server_select_datacenter', ctx.get('datacenterOptions') or [])
+        send_feishu_card(build_feishu_order_card('新增服务器交互', build_new_server_step_message(ctx, 'datacenter'), buttons), open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择数据中心"}})
+
+    if action_name == 'new_server_select_datacenter':
+        uuid_value = action.get('uuid')
+        value = action.get('value')
+        ctx = get_new_server_context(uuid_value)
+        if not ctx:
+            return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
+        ctx['selectedDatacenter'] = value
+        save_new_server_context(uuid_value, ctx)
+        buttons = build_new_server_action_buttons('feishu', uuid_value)
+        send_feishu_card(build_feishu_order_card('新增服务器交互', build_new_server_step_message(ctx, 'action'), buttons), open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择加入监控还是抢购"}})
+
+    if action_name == 'new_server_select_action':
+        uuid_value = action.get('uuid')
+        value = action.get('value')
+        ctx = get_new_server_context(uuid_value)
+        if not ctx:
+            return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
+        ctx['selectedAction'] = value
+        save_new_server_context(uuid_value, ctx)
+        if value == 'monitor':
+            return jsonify({"toast": {"type": "success", "content": create_monitor_from_new_server('feishu', open_id or 'anonymous', ctx)}})
+        set_bot_pending_action('feishu', open_id or 'anonymous', {'type': 'new_server_quantity_input', 'uuid': uuid_value})
+        send_feishu_text('请直接回复抢购数量（1-100）', open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请直接回复抢购数量"}})
+
+    if action_name == 'new_server_select_autopay':
+        uuid_value = action.get('uuid')
+        value = action.get('value')
+        ctx = get_new_server_context(uuid_value)
+        if not ctx:
+            return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
+        ctx['selectedAutoPay'] = value
+        save_new_server_context(uuid_value, ctx)
+        set_bot_pending_action('feishu', open_id or 'anonymous', {'type': 'new_server_retry_interval_input', 'uuid': uuid_value})
+        send_feishu_text('请直接回复抢购失败后的重试间隔，单位为秒（1-3600）', open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请直接回复重试间隔"}})
+
+    if action_name == 'new_server_retry_short_confirm':
+        uuid_value = action.get('uuid')
+        value = action.get('value')
+        ctx = get_new_server_context(uuid_value)
+        if not ctx:
+            return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
+        if value == 'modify':
+            set_bot_pending_action('feishu', open_id or 'anonymous', {'type': 'new_server_retry_interval_input', 'uuid': uuid_value})
+            send_feishu_text('请重新回复抢购失败后的重试间隔，单位为秒（1-3600）', open_id=open_id)
+            return jsonify({"toast": {"type": "info", "content": "请重新输入重试间隔"}})
+        return jsonify({"toast": {"type": "success", "content": create_queue_from_new_server('feishu', open_id or 'anonymous', ctx)}})
 
     if action_name == "order_with_account":
         message_uuid = action.get("uuid")
@@ -6475,6 +7121,20 @@ def start_config_sniper_monitor():
     thread.daemon = True
     thread.start()
     add_log("INFO", "配置绑定狙击监控线程已启动", "config_sniper")
+
+
+def start_auto_refresh_monitors():
+    global servers_auto_refresh_running, availability_auto_refresh_running
+    if not servers_auto_refresh_running:
+        servers_auto_refresh_running = True
+        thread = threading.Thread(target=servers_auto_refresh_loop, daemon=True)
+        thread.start()
+        add_log('INFO', '服务器列表自动刷新线程已启动', 'auto_refresh')
+    if not availability_auto_refresh_running:
+        availability_auto_refresh_running = True
+        thread = threading.Thread(target=availability_auto_refresh_loop, daemon=True)
+        thread.start()
+        add_log('INFO', '实时可用性自动刷新线程已启动', 'auto_refresh')
 
 # ==================== API 接口 ====================
 
@@ -11100,6 +11760,9 @@ if __name__ == '__main__':
         
         # 启动自动刷新缓存
         start_auto_refresh_cache()
+
+        # 启动服务器列表 / 实时可用性自动刷新线程
+        start_auto_refresh_monitors()
     else:
         print("跳过后台线程启动（等待主进程）")
     

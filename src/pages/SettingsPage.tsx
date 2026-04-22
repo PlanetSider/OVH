@@ -21,6 +21,12 @@ const SettingsPage = () => {
     feishuAppSecret,
     feishuVerificationToken,
     feishuEncryptKey,
+    serversAutoRefreshEnabled,
+    serversAutoRefreshIntervalSeconds,
+    availabilityAutoRefreshEnabled,
+    availabilityAutoRefreshIntervalSeconds,
+    serversNewServerNotifyEnabled,
+    availabilityNewServerNotifyEnabled,
     isLoading,
     checkAuthentication
   } = useAPI();
@@ -34,6 +40,12 @@ const SettingsPage = () => {
     feishuAppSecret: "",
     feishuVerificationToken: "",
     feishuEncryptKey: "",
+    serversAutoRefreshEnabled: false,
+    serversAutoRefreshIntervalSeconds: 3600,
+    availabilityAutoRefreshEnabled: false,
+    availabilityAutoRefreshIntervalSeconds: 3600,
+    serversNewServerNotifyEnabled: false,
+    availabilityNewServerNotifyEnabled: false,
     sshKey: ""
   });
   const [isSaving, setIsSaving] = useState(false);
@@ -66,9 +78,15 @@ const SettingsPage = () => {
       feishuAppId: feishuAppId || "",
       feishuAppSecret: feishuAppSecret || "",
       feishuVerificationToken: feishuVerificationToken || "",
-      feishuEncryptKey: feishuEncryptKey || ""
+      feishuEncryptKey: feishuEncryptKey || "",
+      serversAutoRefreshEnabled: !!serversAutoRefreshEnabled,
+      serversAutoRefreshIntervalSeconds: serversAutoRefreshIntervalSeconds || 3600,
+      availabilityAutoRefreshEnabled: !!availabilityAutoRefreshEnabled,
+      availabilityAutoRefreshIntervalSeconds: availabilityAutoRefreshIntervalSeconds || 3600,
+      serversNewServerNotifyEnabled: !!serversNewServerNotifyEnabled,
+      availabilityNewServerNotifyEnabled: !!availabilityNewServerNotifyEnabled
     }));
-  }, [tgToken, tgChatId, feishuEnabled, feishuAppId, feishuAppSecret, feishuVerificationToken, feishuEncryptKey]);
+  }, [tgToken, tgChatId, feishuEnabled, feishuAppId, feishuAppSecret, feishuVerificationToken, feishuEncryptKey, serversAutoRefreshEnabled, serversAutoRefreshIntervalSeconds, availabilityAutoRefreshEnabled, availabilityAutoRefreshIntervalSeconds, serversNewServerNotifyEnabled, availabilityNewServerNotifyEnabled]);
 
   // 加载后端设置中的 SSH 公钥
   useEffect(() => {
@@ -85,7 +103,13 @@ const SettingsPage = () => {
           feishuAppId: cfg.feishuAppId || prev.feishuAppId || "",
           feishuAppSecret: cfg.feishuAppSecret || prev.feishuAppSecret || "",
           feishuVerificationToken: cfg.feishuVerificationToken || prev.feishuVerificationToken || "",
-          feishuEncryptKey: cfg.feishuEncryptKey || prev.feishuEncryptKey || ""
+          feishuEncryptKey: cfg.feishuEncryptKey || prev.feishuEncryptKey || "",
+          serversAutoRefreshEnabled: !!cfg.serversAutoRefreshEnabled,
+          serversAutoRefreshIntervalSeconds: Number(cfg.serversAutoRefreshIntervalSeconds || prev.serversAutoRefreshIntervalSeconds || 3600),
+          availabilityAutoRefreshEnabled: !!cfg.availabilityAutoRefreshEnabled,
+          availabilityAutoRefreshIntervalSeconds: Number(cfg.availabilityAutoRefreshIntervalSeconds || prev.availabilityAutoRefreshIntervalSeconds || 3600),
+          serversNewServerNotifyEnabled: !!cfg.serversNewServerNotifyEnabled,
+          availabilityNewServerNotifyEnabled: !!cfg.availabilityNewServerNotifyEnabled
         }));
       } catch {}
     })();
@@ -317,6 +341,12 @@ const SettingsPage = () => {
           feishuAppSecret: formValues.feishuAppSecret || undefined,
           feishuVerificationToken: formValues.feishuVerificationToken || undefined,
           feishuEncryptKey: formValues.feishuEncryptKey || undefined,
+          serversAutoRefreshEnabled: formValues.serversAutoRefreshEnabled,
+          serversAutoRefreshIntervalSeconds: Number(formValues.serversAutoRefreshIntervalSeconds || 3600),
+          availabilityAutoRefreshEnabled: formValues.availabilityAutoRefreshEnabled,
+          availabilityAutoRefreshIntervalSeconds: Number(formValues.availabilityAutoRefreshIntervalSeconds || 3600),
+          serversNewServerNotifyEnabled: formValues.serversNewServerNotifyEnabled,
+          availabilityNewServerNotifyEnabled: formValues.availabilityNewServerNotifyEnabled,
           sshKey: formValues.sshKey || undefined
         });
         toast.success("访问密码与通知配置已保存，页面将刷新");
@@ -759,6 +789,34 @@ const SettingsPage = () => {
                         {isClearingFeishuBinding ? '清除中...' : '清除绑定'}
                       </button>
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="cyber-grid-line pt-4">
+                <h2 className="text-xl font-bold mb-4">🔄 自动刷新与新增服务器通知</h2>
+                <div className="space-y-4">
+                  <label className="flex items-center gap-2 text-sm text-cyber-text">
+                    <input type="checkbox" name="serversAutoRefreshEnabled" checked={formValues.serversAutoRefreshEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                    启用服务器列表自动刷新
+                  </label>
+                  <input type="number" min={3600} step={3600} name="serversAutoRefreshIntervalSeconds" value={formValues.serversAutoRefreshIntervalSeconds} onChange={handleChange} className="cyber-input w-full" placeholder="服务器列表刷新间隔（秒，最小3600）" />
+                  <label className="flex items-center gap-2 text-sm text-cyber-text">
+                    <input type="checkbox" name="serversNewServerNotifyEnabled" checked={formValues.serversNewServerNotifyEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                    启用服务器列表新增服务器通知
+                  </label>
+
+                  <label className="flex items-center gap-2 text-sm text-cyber-text">
+                    <input type="checkbox" name="availabilityAutoRefreshEnabled" checked={formValues.availabilityAutoRefreshEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                    启用实时可用性自动刷新
+                  </label>
+                  <input type="number" min={3600} step={3600} name="availabilityAutoRefreshIntervalSeconds" value={formValues.availabilityAutoRefreshIntervalSeconds} onChange={handleChange} className="cyber-input w-full" placeholder="实时可用性刷新间隔（秒，最小3600）" />
+                  <label className="flex items-center gap-2 text-sm text-cyber-text">
+                    <input type="checkbox" name="availabilityNewServerNotifyEnabled" checked={formValues.availabilityNewServerNotifyEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                    启用实时可用性新增服务器通知
+                  </label>
+                  <div className="text-xs text-cyber-muted bg-cyber-grid/10 border border-cyber-accent/20 rounded-lg p-3">
+                    最小刷新间隔为 3600 秒。服务器列表新增服务器将发送交互式通知，实时可用性新增服务器将发送文本通知。
                   </div>
                 </div>
               </div>

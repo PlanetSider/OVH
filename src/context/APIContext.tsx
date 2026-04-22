@@ -26,6 +26,12 @@ interface APIContextType {
   feishuAppSecret: string;
   feishuVerificationToken: string;
   feishuEncryptKey: string;
+  serversAutoRefreshEnabled: boolean;
+  serversAutoRefreshIntervalSeconds: number;
+  availabilityAutoRefreshEnabled: boolean;
+  availabilityAutoRefreshIntervalSeconds: number;
+  serversNewServerNotifyEnabled: boolean;
+  availabilityNewServerNotifyEnabled: boolean;
   iam: string;
   zone: string;
   isLoading: boolean;
@@ -52,6 +58,12 @@ interface APIKeysType {
   feishuAppSecret?: string;
   feishuVerificationToken?: string;
   feishuEncryptKey?: string;
+  serversAutoRefreshEnabled?: boolean;
+  serversAutoRefreshIntervalSeconds?: number;
+  availabilityAutoRefreshEnabled?: boolean;
+  availabilityAutoRefreshIntervalSeconds?: number;
+  serversNewServerNotifyEnabled?: boolean;
+  availabilityNewServerNotifyEnabled?: boolean;
   iam?: string;
   zone?: string;
 }
@@ -72,6 +84,12 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
   const [feishuAppSecret, setFeishuAppSecret] = useState<string>('');
   const [feishuVerificationToken, setFeishuVerificationToken] = useState<string>('');
   const [feishuEncryptKey, setFeishuEncryptKey] = useState<string>('');
+  const [serversAutoRefreshEnabled, setServersAutoRefreshEnabled] = useState<boolean>(false);
+  const [serversAutoRefreshIntervalSeconds, setServersAutoRefreshIntervalSeconds] = useState<number>(3600);
+  const [availabilityAutoRefreshEnabled, setAvailabilityAutoRefreshEnabled] = useState<boolean>(false);
+  const [availabilityAutoRefreshIntervalSeconds, setAvailabilityAutoRefreshIntervalSeconds] = useState<number>(3600);
+  const [serversNewServerNotifyEnabled, setServersNewServerNotifyEnabled] = useState<boolean>(false);
+  const [availabilityNewServerNotifyEnabled, setAvailabilityNewServerNotifyEnabled] = useState<boolean>(false);
   const [iam, setIam] = useState<string>('go-ovh-ie');
   const [zone, setZone] = useState<string>('IE');
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -104,6 +122,12 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         setFeishuAppSecret(data?.feishuAppSecret || '');
         setFeishuVerificationToken(data?.feishuVerificationToken || '');
         setFeishuEncryptKey(data?.feishuEncryptKey || '');
+        setServersAutoRefreshEnabled(!!data?.serversAutoRefreshEnabled);
+        setServersAutoRefreshIntervalSeconds(Number(data?.serversAutoRefreshIntervalSeconds || 3600));
+        setAvailabilityAutoRefreshEnabled(!!data?.availabilityAutoRefreshEnabled);
+        setAvailabilityAutoRefreshIntervalSeconds(Number(data?.availabilityAutoRefreshIntervalSeconds || 3600));
+        setServersNewServerNotifyEnabled(!!data?.serversNewServerNotifyEnabled);
+        setAvailabilityNewServerNotifyEnabled(!!data?.availabilityNewServerNotifyEnabled);
 
         // 仅当存在全局（旧）OVH设置时才填充这些字段
         if (data && data.appKey) {
@@ -199,6 +223,12 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         feishuAppSecret: keys.feishuAppSecret || '',
         feishuVerificationToken: keys.feishuVerificationToken || '',
         feishuEncryptKey: keys.feishuEncryptKey || '',
+        serversAutoRefreshEnabled: !!keys.serversAutoRefreshEnabled,
+        serversAutoRefreshIntervalSeconds: keys.serversAutoRefreshIntervalSeconds || 3600,
+        availabilityAutoRefreshEnabled: !!keys.availabilityAutoRefreshEnabled,
+        availabilityAutoRefreshIntervalSeconds: keys.availabilityAutoRefreshIntervalSeconds || 3600,
+        serversNewServerNotifyEnabled: !!keys.serversNewServerNotifyEnabled,
+        availabilityNewServerNotifyEnabled: !!keys.availabilityNewServerNotifyEnabled,
         iam: keys.iam || 'go-ovh-ie',
         zone: keys.zone || 'IE'
       });
@@ -214,6 +244,12 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
       setFeishuAppSecret(keys.feishuAppSecret || '');
       setFeishuVerificationToken(keys.feishuVerificationToken || '');
       setFeishuEncryptKey(keys.feishuEncryptKey || '');
+      setServersAutoRefreshEnabled(!!keys.serversAutoRefreshEnabled);
+      setServersAutoRefreshIntervalSeconds(keys.serversAutoRefreshIntervalSeconds || 3600);
+      setAvailabilityAutoRefreshEnabled(!!keys.availabilityAutoRefreshEnabled);
+      setAvailabilityAutoRefreshIntervalSeconds(keys.availabilityAutoRefreshIntervalSeconds || 3600);
+      setServersNewServerNotifyEnabled(!!keys.serversNewServerNotifyEnabled);
+      setAvailabilityNewServerNotifyEnabled(!!keys.availabilityNewServerNotifyEnabled);
       setIam(keys.iam || 'go-ovh-ie');
       setZone(keys.zone || 'IE');
       
@@ -280,6 +316,12 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
     feishuAppSecret,
     feishuVerificationToken,
     feishuEncryptKey,
+    serversAutoRefreshEnabled,
+    serversAutoRefreshIntervalSeconds,
+    availabilityAutoRefreshEnabled,
+    availabilityAutoRefreshIntervalSeconds,
+    serversNewServerNotifyEnabled,
+    availabilityNewServerNotifyEnabled,
     iam,
     zone,
     isLoading,
