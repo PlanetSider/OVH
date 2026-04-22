@@ -193,6 +193,43 @@ def is_duplicate_bot_message(channel: str, message_key: str, ttl_seconds: int = 
     return False
 
 
+def split_long_message(text: str, max_len: int = 3000):
+    if not text or len(text) <= max_len:
+        return [text]
+    chunks = []
+    current = ""
+    for block in text.split("\n\n"):
+        candidate = block if not current else current + "\n\n" + block
+        if len(candidate) <= max_len:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        if len(block) <= max_len:
+            current = block
+            continue
+        # 超长单块再按行切
+        line_buf = ""
+        for line in block.splitlines():
+            line_candidate = line if not line_buf else line_buf + "\n" + line
+            if len(line_candidate) <= max_len:
+                line_buf = line_candidate
+            else:
+                if line_buf:
+                    chunks.append(line_buf)
+                if len(line) <= max_len:
+                    line_buf = line
+                else:
+                    # 极端长行直接硬切
+                    for i in range(0, len(line), max_len):
+                        chunks.append(line[i:i + max_len])
+                    line_buf = ""
+        current = line_buf
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def get_feishu_config():
     return {
         "feishuEnabled": bool(config.get("feishuEnabled", False)),
@@ -1050,27 +1087,8 @@ def build_status_all_message():
         client = get_ovh_client(account_id)
         email = acc.get('alias') or account_id
         customer_code = account_id
-        if client:
-            try:
-                account_info = client.get('/me')
-                email = account_info.get('email') or email
-                customer_code = account_info.get('customerCode') or account_info.get('nichandle') or customer_code
-            except Exception as e:
-                add_log('WARNING', f"获取账户 {account_id} 概览失败: {str(e)}", 'bot')
-        monitor_count = len([s for s in get_monitor_for_account(account_id).subscriptions if s.get('planCode')])
-        queue_count = len([item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']])
-        server_count = 0
-        if client:
-            try:
-                server_count = len(client.get('/dedicated/server'))
-            except Exception:
-                server_count = 0
         lines.append("")
-        lines.append(f"账户: {email}")
-        lines.append(f"- 客户代码: {customer_code}")
-        lines.append(f"- 监控任务数量: {monitor_count}")
-        lines.append(f"- 抢购任务数量: {queue_count}")
-        lines.append(f"- 服务器数量: {server_count}")
+        lines.append(build_status_message(account_id))
     return '\n'.join(lines).strip()
 
 
@@ -2127,8 +2145,10 @@ def send_feishu_text(message: str, open_id=None, account_id=None):
         add_log("WARNING", "飞书消息未发送: 未绑定飞书私聊用户", "feishu")
         return False
     try:
-        feishu_client.send_text(target_open_id, message, "open_id")
-        add_log("INFO", f"成功发送消息到飞书: open_id={target_open_id}", "feishu")
+        chunks = split_long_message(message, 2500)
+        for chunk in chunks:
+            feishu_client.send_text(target_open_id, chunk, "open_id")
+        add_log("INFO", f"成功发送消息到飞书: open_id={target_open_id}, chunks={len(chunks)}", "feishu")
         return True
     except Exception as e:
         add_log("ERROR", f"发送飞书消息失败: {str(e)}", "feishu")
@@ -5653,11 +5673,15 @@ def telegram_webhook():
                 return jsonify({"ok": True})
             response_payload = dispatch_bot_command('telegram', str(user_id), text)
             if tg_token and chat_id and response_payload:
-                requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
-                    "chat_id": chat_id,
-                    "text": response_payload.get('text', ''),
-                    **({"reply_markup": response_payload.get('reply_markup')} if response_payload.get('reply_markup') else {})
-                }, timeout=5)
+                text_chunks = split_long_message(response_payload.get('text', ''), 3000)
+                for index, chunk in enumerate(text_chunks):
+                    payload = {
+                        "chat_id": chat_id,
+                        "text": chunk
+                    }
+                    if index == 0 and response_payload.get('reply_markup'):
+                        payload["reply_markup"] = response_payload.get('reply_markup')
+                    requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json=payload, timeout=5)
             
             return jsonify({"ok": True})
         
