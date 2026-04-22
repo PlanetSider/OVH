@@ -5110,6 +5110,11 @@ def save_subscriptions(account_id=None):
         add_log("ERROR", f"保存订阅数据失败: {str(e)}", "monitor")
 
 # Routes
+@app.route('/api/auth/check', methods=['GET'])
+def check_access_password():
+    return jsonify({"success": True})
+
+
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
     return jsonify(config)

@@ -27,7 +27,7 @@ const LoginPage = () => {
     setIsSubmitting(true);
     try {
       setApiSecretKey(normalizedKey);
-      await api.get('/settings');
+      await api.get('/auth/check');
       toast.success('访问密码验证成功');
       navigate(targetPath, { replace: true });
     } catch (error: any) {

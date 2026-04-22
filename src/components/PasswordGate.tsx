@@ -25,7 +25,7 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
       }
 
       try {
-        await api.get('/settings');
+        await api.get('/auth/check');
         if (active) setStatus('allowed');
       } catch {
         if (active) setStatus('blocked');

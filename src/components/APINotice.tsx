@@ -15,7 +15,7 @@ const APINotice = () => {
           setPasswordValid(false);
           return;
         }
-        await api.get('/settings');
+        await api.get('/auth/check');
         setPasswordValid(true);
       } catch {
         setPasswordValid(false);
