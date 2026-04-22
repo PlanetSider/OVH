@@ -386,9 +386,9 @@ const SettingsPage = () => {
           <span className="ml-3 text-cyber-muted">加载中...</span>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
           <div className="lg:col-span-2">
-            <form onSubmit={handleSubmit} className="cyber-panel p-4 sm:p-6 space-y-4 sm:space-y-6">
+            <div className="cyber-panel p-4 sm:p-6 space-y-4 sm:space-y-6">
               {/* 访问密码 */}
               <div>
                 <h2 className={`${isMobile ? 'text-lg' : 'text-xl'} font-bold mb-3 sm:mb-4`}>🔐 访问密码</h2>
@@ -793,34 +793,6 @@ const SettingsPage = () => {
                 </div>
               </div>
 
-              <div className="cyber-grid-line pt-4">
-                <h2 className="text-xl font-bold mb-4">🔄 自动刷新与新增服务器通知</h2>
-                <div className="space-y-4">
-                  <label className="flex items-center gap-2 text-sm text-cyber-text">
-                    <input type="checkbox" name="serversAutoRefreshEnabled" checked={formValues.serversAutoRefreshEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
-                    启用服务器列表自动刷新
-                  </label>
-                  <input type="number" min={3600} step={3600} name="serversAutoRefreshIntervalSeconds" value={formValues.serversAutoRefreshIntervalSeconds} onChange={handleChange} className="cyber-input w-full" placeholder="服务器列表刷新间隔（秒，最小3600）" />
-                  <label className="flex items-center gap-2 text-sm text-cyber-text">
-                    <input type="checkbox" name="serversNewServerNotifyEnabled" checked={formValues.serversNewServerNotifyEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
-                    启用服务器列表新增服务器通知
-                  </label>
-
-                  <label className="flex items-center gap-2 text-sm text-cyber-text">
-                    <input type="checkbox" name="availabilityAutoRefreshEnabled" checked={formValues.availabilityAutoRefreshEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
-                    启用实时可用性自动刷新
-                  </label>
-                  <input type="number" min={3600} step={3600} name="availabilityAutoRefreshIntervalSeconds" value={formValues.availabilityAutoRefreshIntervalSeconds} onChange={handleChange} className="cyber-input w-full" placeholder="实时可用性刷新间隔（秒，最小3600）" />
-                  <label className="flex items-center gap-2 text-sm text-cyber-text">
-                    <input type="checkbox" name="availabilityNewServerNotifyEnabled" checked={formValues.availabilityNewServerNotifyEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
-                    启用实时可用性新增服务器通知
-                  </label>
-                  <div className="text-xs text-cyber-muted bg-cyber-grid/10 border border-cyber-accent/20 rounded-lg p-3">
-                    最小刷新间隔为 3600 秒。服务器列表新增服务器将发送交互式通知，实时可用性新增服务器将发送文本通知。
-                  </div>
-                </div>
-              </div>
-              
               <div className="flex justify-end pt-4">
                 <button
                   type="submit"
@@ -838,7 +810,7 @@ const SettingsPage = () => {
                   ) : "保存设置"}
                 </button>
               </div>
-            </form>
+            </div>
           </div>
           
           <div>
@@ -866,6 +838,34 @@ const SettingsPage = () => {
                 </div>
               </div>
             </div>
+
+            <div className="cyber-panel p-6 mt-6">
+              <h2 className="text-lg font-bold mb-4">🔄 自动刷新与新增服务器通知</h2>
+              <div className="space-y-4">
+                <label className="flex items-center gap-2 text-sm text-cyber-text">
+                  <input type="checkbox" name="serversAutoRefreshEnabled" checked={formValues.serversAutoRefreshEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                  启用服务器列表自动刷新
+                </label>
+                <input type="number" min={3600} step={3600} name="serversAutoRefreshIntervalSeconds" value={formValues.serversAutoRefreshIntervalSeconds} onChange={handleChange} className="cyber-input w-full" placeholder="服务器列表刷新间隔（秒，最小3600）" />
+                <label className="flex items-center gap-2 text-sm text-cyber-text">
+                  <input type="checkbox" name="serversNewServerNotifyEnabled" checked={formValues.serversNewServerNotifyEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                  启用服务器列表新增服务器通知
+                </label>
+
+                <label className="flex items-center gap-2 text-sm text-cyber-text">
+                  <input type="checkbox" name="availabilityAutoRefreshEnabled" checked={formValues.availabilityAutoRefreshEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                  启用实时可用性自动刷新
+                </label>
+                <input type="number" min={3600} step={3600} name="availabilityAutoRefreshIntervalSeconds" value={formValues.availabilityAutoRefreshIntervalSeconds} onChange={handleChange} className="cyber-input w-full" placeholder="实时可用性刷新间隔（秒，最小3600）" />
+                <label className="flex items-center gap-2 text-sm text-cyber-text">
+                  <input type="checkbox" name="availabilityNewServerNotifyEnabled" checked={formValues.availabilityNewServerNotifyEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                  启用实时可用性新增服务器通知
+                </label>
+                <div className="text-xs text-cyber-muted bg-cyber-grid/10 border border-cyber-accent/20 rounded-lg p-3">
+                  最小刷新间隔为 3600 秒。服务器列表新增服务器将发送交互式通知，实时可用性新增服务器将发送文本通知。
+                </div>
+              </div>
+            </div>
             
             {/* 缓存管理器 */}
             <div className="mt-6">
@@ -873,7 +873,7 @@ const SettingsPage = () => {
             </div>
 
           </div>
-        </div>
+        </form>
       )}
 
       {/* 错误历史模态框 */}

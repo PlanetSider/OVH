@@ -29,6 +29,19 @@ interface QueueItem {
   accountId?: string;
 }
 
+interface MonitorSubscription {
+  planCode: string;
+  datacenters: string[];
+  autoOrder?: boolean;
+}
+
+interface VPSSubscription {
+  id: string;
+  planCode: string;
+  ovhSubsidiary: string;
+  datacenters: string[];
+}
+
 const Dashboard = () => {
   const { isAuthenticated, accounts } = useAPI();
   const [stats, setStats] = useState<StatsType>({
@@ -41,6 +54,8 @@ const Dashboard = () => {
     monitorRunning: false,
   });
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
+  const [monitorSubscriptions, setMonitorSubscriptions] = useState<MonitorSubscription[]>([]);
+  const [vpsSubscriptions, setVpsSubscriptions] = useState<VPSSubscription[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const fallbackToastShownRef = useRef(false);
 
@@ -53,9 +68,11 @@ const Dashboard = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [statsResponse, queueResponse] = await Promise.all([
+        const [statsResponse, queueResponse, monitorResponse, vpsResponse] = await Promise.all([
           api.get(`/stats`),
-          api.get(`/queue/all`)
+          api.get(`/queue/all`),
+          api.get('/monitor/subscriptions'),
+          api.get('/vps-monitor/subscriptions')
         ]);
         setStats(statsResponse.data);
         // 如果服务器总数为0（缓存为空），提示一次后台将从OVH更新
@@ -68,6 +85,8 @@ const Dashboard = () => {
           .filter((item: QueueItem) => ['running', 'pending', 'paused'].includes(item.status))
           .slice(0, 3);
         setQueueItems(activeItems);
+        setMonitorSubscriptions((monitorResponse.data || []).slice(0, 3));
+        setVpsSubscriptions((vpsResponse.data || []).slice(0, 3));
       } catch (error) {
         console.error("Error fetching data:", error);
       } finally {
@@ -295,63 +314,68 @@ const Dashboard = () => {
               </Link>
             </div>
           ) : (
-            <div className="space-y-3">
-              {queueItems.map((item) => (
-                <div key={item.id} className="p-4 bg-cyber-grid/10 rounded-lg border border-cyber-accent/20 hover:border-cyber-accent/40 hover:bg-cyber-grid/15 transition-all duration-200 flex justify-between items-center group">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-base text-cyber-accent truncate group-hover:text-cyber-neon transition-colors">{item.planCode}</p>
-                    <div className="flex items-center gap-3 text-sm text-cyber-muted mt-1.5">
-                      <span className="flex items-center gap-1.5">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyber-accent/60">
-                          <circle cx="12" cy="12" r="10"></circle>
-                          <polyline points="12 6 12 12 16 14"></polyline>
-                        </svg>
-                        <span className="ml-2 px-2 py-0.5 text-[11px] bg-cyber-accent/20 text-cyber-accent rounded-full">
-                          第 {item.retryCount + 1} 次尝试
-                        </span>
-                        <span className="text-cyber-grid">•</span>
-                        {(() => {
-                          const list = Array.isArray(item.datacenters) && item.datacenters.length > 0 ? item.datacenters : (item.datacenter ? [item.datacenter] : []);
-                          if (list.length > 1) {
-                            return (
-                              <span className="px-2 py-0.5 text-[11px] bg-cyber-accent/20 text-cyber-accent rounded-full">
-                                机房优先级：{list.map(dc => dc.toUpperCase()).join(' > ')}
-                              </span>
-                            );
-                          }
-                          if (list.length === 1) {
-                            return (
-                              <span className="px-2 py-0.5 text-[11px] bg-cyber-accent/20 text-cyber-accent rounded-full">
-                                机房：{list[0].toUpperCase()}
-                              </span>
-                            );
-                          }
-                          return null;
-                        })()}
-                      </span>
-                      <span className="text-cyber-grid">•</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-                    <span className="px-2 py-0.5 text-[11px] bg-slate-600/30 text-slate-200 rounded-full">
-                      账户：{getAccountLabel(item.accountId)}
-                    </span>
-                    <span className={`text-sm px-3 py-1.5 rounded-lg flex items-center font-medium ${
-                      item.status === 'running' ? 'bg-green-500/20 text-green-400 border border-green-500/30' :
-                      item.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' :
-                      'bg-gray-500/20 text-gray-400 border border-gray-500/30'
-                    }`}>
-                      <span className={`w-2 h-2 mr-2 rounded-full ${
-                        item.status === 'running' ? 'bg-green-400 animate-pulse' :
-                        item.status === 'pending' ? 'bg-yellow-400' :
-                        'bg-gray-400'
-                      }`}></span>
-                      {item.status === 'running' ? '运行中' :
-                       item.status === 'pending' ? '等待中' : '已暂停'}
-                    </span>
-                  </div>
+            <div className="space-y-6">
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-cyber-accent">抢购队列</h3>
+                  <Link to="/queue" className="text-cyber-muted text-xs hover:text-cyber-accent transition-colors">查看全部</Link>
                 </div>
-              ))}
+                {queueItems.length === 0 ? (
+                  <div className="text-cyber-muted text-sm bg-cyber-grid/10 border border-cyber-grid/30 rounded-lg p-4">暂无抢购任务</div>
+                ) : (
+                  <div className="space-y-2">
+                    {queueItems.map((item) => (
+                      <div key={item.id} className="p-3 bg-cyber-grid/10 rounded-lg border border-cyber-accent/20 flex justify-between items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-cyber-text truncate">{item.planCode}</div>
+                          <div className="text-xs text-cyber-muted mt-1">机房：{(item.datacenters && item.datacenters.length > 0 ? item.datacenters : (item.datacenter ? [item.datacenter] : ['全部'])).map(dc => dc.toUpperCase()).join(' > ')}</div>
+                        </div>
+                        <div className="text-xs text-cyber-muted">{getAccountLabel(item.accountId)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-green-400">服务器监控</h3>
+                  <Link to="/monitor" className="text-cyber-muted text-xs hover:text-green-400 transition-colors">查看全部</Link>
+                </div>
+                {monitorSubscriptions.length === 0 ? (
+                  <div className="text-cyber-muted text-sm bg-cyber-grid/10 border border-cyber-grid/30 rounded-lg p-4">暂无服务器监控任务</div>
+                ) : (
+                  <div className="space-y-2">
+                    {monitorSubscriptions.map((sub, idx) => (
+                      <div key={`${sub.planCode}-${idx}`} className="p-3 bg-cyber-grid/10 rounded-lg border border-green-500/20">
+                        <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
+                        <div className="text-xs text-cyber-muted mt-1">机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
+                        <div className="text-xs text-green-400 mt-1">自动下单：{sub.autoOrder ? '是' : '否'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-blue-400">VPS监控</h3>
+                  <Link to="/vps-monitor" className="text-cyber-muted text-xs hover:text-blue-400 transition-colors">查看全部</Link>
+                </div>
+                {vpsSubscriptions.length === 0 ? (
+                  <div className="text-cyber-muted text-sm bg-cyber-grid/10 border border-cyber-grid/30 rounded-lg p-4">暂无VPS监控任务</div>
+                ) : (
+                  <div className="space-y-2">
+                    {vpsSubscriptions.map((sub) => (
+                      <div key={sub.id} className="p-3 bg-cyber-grid/10 rounded-lg border border-blue-500/20">
+                        <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
+                        <div className="text-xs text-cyber-muted mt-1">子公司：{sub.ovhSubsidiary}</div>
+                        <div className="text-xs text-cyber-muted mt-1">机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </motion.div>

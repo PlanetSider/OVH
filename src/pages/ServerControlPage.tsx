@@ -264,6 +264,9 @@ const ServerControlPage: React.FC = () => {
   const [ipmiLoading, setIpmiLoading] = useState(false);
   const [ipmiCountdown, setIpmiCountdown] = useState(20);
   const [removingAlias, setRemovingAlias] = useState(false);
+  const [showAliasDialog, setShowAliasDialog] = useState(false);
+  const [aliasInput, setAliasInput] = useState('');
+  const [savingAlias, setSavingAlias] = useState(false);
 
   // 安装进度监控
   const [showInstallProgress, setShowInstallProgress] = useState(false);
@@ -305,6 +308,39 @@ const ServerControlPage: React.FC = () => {
       showToast(error?.response?.data?.error || error?.message || '移除别名失败', 'error');
     } finally {
       setRemovingAlias(false);
+    }
+  };
+
+  const openAliasDialog = () => {
+    if (!selectedServer) return;
+    setAliasInput(selectedServer.alias || '');
+    setShowAliasDialog(true);
+  };
+
+  const handleSaveServerAlias = async () => {
+    if (!selectedServer?.serviceName) return;
+    const alias = aliasInput.trim();
+    if (!alias) {
+      showToast('请输入自定义名称', 'error');
+      return;
+    }
+    setSavingAlias(true);
+    try {
+      await api.post('/server-aliases', {
+        serviceName: selectedServer.serviceName,
+        alias
+      });
+      const response = await api.get('/server-control/list');
+      const refreshed = response.data?.servers || [];
+      setServers(refreshed);
+      const nextSelected = refreshed.find((s: ServerInfo) => s.serviceName === selectedServer.serviceName) || null;
+      setSelectedServer(nextSelected);
+      setShowAliasDialog(false);
+      showToast('服务器自定义名称已保存', 'success');
+    } catch (error: any) {
+      showToast(error?.response?.data?.error || error?.message || '保存自定义名称失败', 'error');
+    } finally {
+      setSavingAlias(false);
     }
   };
 
@@ -2273,10 +2309,10 @@ const ServerControlPage: React.FC = () => {
                     <span className="text-cyber-text ml-2">{selectedServer.serviceName}</span>
                   </div>
                   <div className="py-2">
-                    <span className="text-cyber-muted">显示名称:</span>
-                    <span className="text-cyber-text ml-2">{selectedServer.name}</span>
+                    <span className="text-cyber-muted">自定义名称:</span>
+                    <span className="text-cyber-text ml-2">{selectedServer.alias || '未设置'}</span>
                   </div>
-                  {selectedServer.alias && selectedServer.originalName && selectedServer.originalName !== selectedServer.name && (
+                  {selectedServer.originalName && (
                     <div className="py-2">
                       <span className="text-cyber-muted">原始名称:</span>
                       <span className="text-cyber-text ml-2">{selectedServer.originalName}</span>
@@ -2398,6 +2434,12 @@ const ServerControlPage: React.FC = () => {
                     className="w-full px-4 py-3 bg-gradient-to-r from-yellow-500/10 to-orange-500/10 border border-yellow-500/30 rounded-lg text-yellow-400 hover:from-yellow-500/20 hover:to-orange-500/20 transition-all flex items-center gap-2 justify-center">
                     <Settings className="w-4 h-4" />
                     高级功能
+                  </button>
+                  <button
+                    onClick={openAliasDialog}
+                    className="w-full px-4 py-3 bg-gradient-to-r from-cyan-500/10 to-sky-500/10 border border-cyan-500/30 rounded-lg text-cyan-400 hover:from-cyan-500/20 hover:to-sky-500/20 transition-all flex items-center gap-2 justify-center">
+                    <Server className="w-4 h-4" />
+                    自定义名
                   </button>
                 </div>
               </div>
@@ -4483,6 +4525,63 @@ const ServerControlPage: React.FC = () => {
       {/* 硬件更换对话框 */}
       {createPortal(
         <AnimatePresence>
+          {showAliasDialog && selectedServer && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="cyber-card max-w-md w-full"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-cyber-text">设置自定义名称</h3>
+                  <button
+                    onClick={() => setShowAliasDialog(false)}
+                    className="p-2 hover:bg-cyber-grid/50 rounded-lg transition-colors text-cyber-muted hover:text-cyber-text"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="text-sm text-cyber-muted">
+                    <div>服务名称：<span className="text-cyber-text">{selectedServer.serviceName}</span></div>
+                    {selectedServer.originalName && (
+                      <div>原始名称：<span className="text-cyber-text">{selectedServer.originalName}</span></div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-cyber-muted mb-2 text-sm">自定义名称</label>
+                    <input
+                      type="text"
+                      value={aliasInput}
+                      onChange={(e) => setAliasInput(e.target.value)}
+                      className="cyber-input w-full"
+                      placeholder="输入服务器自定义名称"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-3">
+                    <button
+                      onClick={() => setShowAliasDialog(false)}
+                      className="px-4 py-2 border border-cyber-accent/30 rounded-md text-sm text-cyber-text hover:bg-cyber-accent/5 transition-colors"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={handleSaveServerAlias}
+                      disabled={savingAlias}
+                      className="cyber-button px-4 py-2 text-sm disabled:opacity-50"
+                    >
+                      {savingAlias ? '保存中...' : '保存'}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+
           {showHardwareReplaceDialog && (
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
               <motion.div
