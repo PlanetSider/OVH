@@ -240,6 +240,12 @@ def get_feishu_config():
     }
 
 
+def get_subscriptions_file(account_id=None):
+    if account_id:
+        return os.path.join(DATA_DIR, f"subscriptions_{account_id}.json")
+    return SUBSCRIPTIONS_FILE
+
+
 feishu_client = FeishuClient(get_feishu_config, lambda level, message, source="feishu": add_log(level, message, source))
 
 # Load data from files if they exist
@@ -323,38 +329,68 @@ def load_data():
         except json.JSONDecodeError:
             print(f"警告: {SERVERS_FILE}文件格式不正确，使用空列表")
     
-    # 加载订阅数据（默认账户）
-    if os.path.exists(SUBSCRIPTIONS_FILE):
-        try:
-            with open(SUBSCRIPTIONS_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    subscriptions_data = json.loads(content)
-                    mon = init_monitor()
-                    if 'subscriptions' in subscriptions_data:
-                        for sub in subscriptions_data['subscriptions']:
-                            mon.add_subscription(
-                                sub['planCode'],
-                                sub.get('datacenters', []),
-                                sub.get('notifyAvailable', True),
-                                sub.get('notifyUnavailable', False),
-                                sub.get('serverName'),
-                                sub.get('lastStatus', {}),
-                                sub.get('history', []),
-                                sub.get('autoOrder', False),
-                                sub.get('autoOrderQuantity', 0)
-                            )
-                    if 'known_servers' in subscriptions_data:
-                        mon.known_servers = set(subscriptions_data['known_servers'])
-                    mon.check_interval = subscriptions_data.get('check_interval', 20)
-                    print(f"检查间隔设置为: {mon.check_interval}秒（来自subscriptions.json）")
-                    print(f"已加载 {len(mon.subscriptions)} 个订阅")
+    # 加载各账户订阅数据；默认账户兼容旧 subscriptions.json
+    try:
+        subscription_account_ids = list(accounts.keys()) if accounts else []
+        if not subscription_account_ids:
+            subscription_account_ids = [None]
+        legacy_subscriptions_data = None
+        if os.path.exists(SUBSCRIPTIONS_FILE):
+            try:
+                with open(SUBSCRIPTIONS_FILE, 'r', encoding='utf-8') as f:
+                    legacy_content = f.read().strip()
+                if legacy_content:
+                    legacy_subscriptions_data = json.loads(legacy_content)
+            except Exception:
+                legacy_subscriptions_data = None
+        loaded_any_subscription = False
+        for idx, aid in enumerate(subscription_account_ids):
+            path = get_subscriptions_file(aid)
+            subscriptions_data = None
+            if not os.path.exists(path):
+                if aid is not None and idx == 0 and legacy_subscriptions_data:
+                    subscriptions_data = legacy_subscriptions_data
+                elif aid is None and legacy_subscriptions_data:
+                    subscriptions_data = legacy_subscriptions_data
                 else:
-                    print(f"警告: {SUBSCRIPTIONS_FILE}文件为空")
-        except json.JSONDecodeError:
-            print(f"警告: {SUBSCRIPTIONS_FILE}文件格式不正确")
-
-    # 订阅配置不区分账户，仅使用全局 subscriptions.json
+                    continue
+            else:
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                if not content:
+                    print(f"警告: {path}文件为空")
+                    continue
+                subscriptions_data = json.loads(content)
+            mon = get_monitor_for_account(aid)
+            mon.subscriptions = []
+            mon.known_servers = set()
+            if 'subscriptions' in subscriptions_data:
+                for sub in subscriptions_data['subscriptions']:
+                    mon.add_subscription(
+                        sub['planCode'],
+                        sub.get('datacenters', []),
+                        sub.get('notifyAvailable', True),
+                        sub.get('notifyUnavailable', False),
+                        sub.get('serverName'),
+                        sub.get('lastStatus', {}),
+                        sub.get('history', []),
+                        sub.get('autoOrder', False),
+                        sub.get('autoOrderQuantity', 0)
+                    )
+            if 'known_servers' in subscriptions_data:
+                mon.known_servers = set(subscriptions_data['known_servers'])
+            mon.check_interval = subscriptions_data.get('check_interval', 20)
+            loaded_any_subscription = True
+            source_name = os.path.basename(path) if os.path.exists(path) else os.path.basename(SUBSCRIPTIONS_FILE)
+            print(f"检查间隔设置为: {mon.check_interval}秒（来自{source_name}）")
+            print(f"已为账户 {aid or 'default'} 加载 {len(mon.subscriptions)} 个订阅")
+            if aid is not None and not os.path.exists(path) and subscriptions_data is legacy_subscriptions_data:
+                save_subscriptions(aid)
+                print(f"已将旧版全局订阅迁移写入: {os.path.basename(get_subscriptions_file(aid))}")
+        if not loaded_any_subscription and os.path.exists(SUBSCRIPTIONS_FILE):
+            print(f"警告: {SUBSCRIPTIONS_FILE}文件格式不正确或未加载到任何订阅")
+    except json.JSONDecodeError:
+        print(f"警告: 订阅文件格式不正确")
 
     # 加载各账户队列分片
     try:
@@ -833,17 +869,32 @@ def unwrap_feishu_payload(body):
     return body
 
 
+def extract_feishu_verify_values(payload):
+    if not isinstance(payload, dict):
+        return "", ""
+    header = payload.get("header") or {}
+    event = payload.get("event") or {}
+    event_header = event.get("header") or {}
+    return (
+        payload.get("token", "") or header.get("token", "") or event_header.get("token", ""),
+        payload.get("app_id", "") or header.get("app_id", "") or event_header.get("app_id", "")
+    )
+
+
 def extract_feishu_open_id(payload):
     if not isinstance(payload, dict):
         return ""
     operator = payload.get("operator") or {}
     event = payload.get("event") or {}
+    event_operator = event.get("operator") or {}
     sender = event.get("sender") or {}
     sender_id = sender.get("sender_id") or {}
     return (
         payload.get("open_id")
         or operator.get("open_id")
         or ((operator.get("operator_id") or {}).get("open_id") if isinstance(operator.get("operator_id"), dict) else "")
+        or event_operator.get("open_id")
+        or ((event_operator.get("operator_id") or {}).get("open_id") if isinstance(event_operator.get("operator_id"), dict) else "")
         or sender_id.get("open_id")
         or ""
     )
@@ -852,10 +903,81 @@ def extract_feishu_open_id(payload):
 def extract_feishu_user_name(payload):
     if not isinstance(payload, dict):
         return ""
+    operator = payload.get("operator") or {}
     event = payload.get("event") or {}
+    event_operator = event.get("operator") or {}
     sender = event.get("sender") or {}
     sender_id = sender.get("sender_id") or {}
-    return sender_id.get("user_id") or payload.get("open_id") or ""
+    return (
+        sender_id.get("user_id")
+        or ((event_operator.get("operator_id") or {}).get("user_id") if isinstance(event_operator.get("operator_id"), dict) else "")
+        or ((operator.get("operator_id") or {}).get("user_id") if isinstance(operator.get("operator_id"), dict) else "")
+        or payload.get("open_id")
+        or ""
+    )
+
+
+def normalize_feishu_card_action_payload(payload):
+    if not isinstance(payload, dict):
+        return {
+            "event_type": "",
+            "open_id": "",
+            "user_name": "",
+            "action": {},
+            "action_name": "",
+            "callback_id": "",
+            "open_message_id": "",
+            "raw_action": {},
+        }
+
+    header = payload.get("header") or {}
+    event = payload.get("event") or {}
+    event_header = event.get("header") or {}
+    top_level_action = payload.get("action") or {}
+    event_action = event.get("action") or {}
+    event_context = event.get("context") or {}
+
+    raw_action = event_action if isinstance(event_action, dict) and event_action else top_level_action
+    if not isinstance(raw_action, dict):
+        raw_action = {}
+
+    action = {}
+    for candidate in [
+        raw_action.get("value"),
+        raw_action.get("form_value"),
+        top_level_action.get("value") if isinstance(top_level_action, dict) else {},
+        top_level_action.get("form_value") if isinstance(top_level_action, dict) else {},
+    ]:
+        if isinstance(candidate, dict) and candidate:
+            action.update(candidate)
+
+    callback_id = (
+        raw_action.get("callback_id")
+        or event.get("callback_id")
+        or payload.get("callback_id")
+        or ""
+    )
+
+    open_message_id = event_context.get("open_message_id") or payload.get("open_message_id") or ""
+
+    dedupe_key = callback_id
+    if not dedupe_key and action:
+        try:
+            dedupe_key = f"{open_message_id}:{json.dumps(action, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
+        except Exception:
+            dedupe_key = f"{open_message_id}:{str(action)}"
+
+    return {
+        "event_type": header.get("event_type") or event_header.get("event_type") or "",
+        "open_id": extract_feishu_open_id(payload),
+        "user_name": extract_feishu_user_name(payload),
+        "action": action,
+        "action_name": action.get("action") or "",
+        "callback_id": callback_id,
+        "open_message_id": open_message_id,
+        "dedupe_key": dedupe_key,
+        "raw_action": raw_action,
+    }
 
 
 def save_bot_user_account_selections():
@@ -912,6 +1034,19 @@ def set_bot_pending_action(channel: str, user_key: str, payload: dict):
 def clear_bot_pending_action(channel: str, user_key: str):
     bot_pending_actions.pop(f"{channel}:{user_key}", None)
     save_bot_pending_actions()
+
+
+def ensure_new_server_pending_slot(channel: str, user_key: str, uuid_value: str):
+    pending = get_bot_pending_action(channel, user_key)
+    pending_type = pending.get('type')
+    if pending_type not in ['new_server_quantity_input', 'new_server_retry_interval_input']:
+        return True, None
+    pending_uuid = pending.get('uuid')
+    if not pending_uuid or pending_uuid == uuid_value:
+        return True, None
+    if pending_type == 'new_server_quantity_input':
+        return False, '你当前还有一条新增服务器交互正在等待输入抢购数量，请先完成后再处理另一条通知。'
+    return False, '你当前还有一条新增服务器交互正在等待输入重试间隔，请先完成后再处理另一条通知。'
 
 
 def get_bot_selected_account(channel: str, user_key: str):
@@ -1441,6 +1576,16 @@ def get_servers_snapshot_items(servers_list):
     return items
 
 
+def get_servers_snapshot_items_for_account(account_id, servers_list):
+    items = {}
+    for key, item in (get_servers_snapshot_items(servers_list) or {}).items():
+        items[build_account_snapshot_key(account_id, key)] = {
+            **item,
+            'accountId': account_id
+        }
+    return items
+
+
 def get_availability_snapshot_items(availabilities):
     items = {}
     for item in availabilities or []:
@@ -1470,37 +1615,79 @@ def diff_new_items(previous_items, current_items):
     return [current_items[k] for k in new_keys]
 
 
-def build_new_availability_server_message(item):
+def get_auto_refresh_account_ids():
+    if not accounts:
+        return []
+    account_ids = list(accounts.keys())
+    if last_selected_account_id in accounts:
+        return [last_selected_account_id] + [aid for aid in account_ids if aid != last_selected_account_id]
+    return account_ids
+
+
+def build_account_snapshot_key(account_id, item_key):
+    return f"{account_id}:{item_key}"
+
+
+def get_account_label(account_id):
+    if not account_id:
+        return "default"
+    acc = accounts.get(account_id) or {}
+    return acc.get('alias') or account_id
+
+
+def build_new_availability_server_message(item, account_id=None):
     dcs = ', '.join([dc.upper() for dc in item.get('datacenters') or []]) or '无'
+    account_line = f"账户: {get_account_label(account_id)}\n" if account_id else ""
     return (
         "🆕 实时可用性发现新增服务器\n\n"
+        f"{account_line}"
         f"名称: {item.get('server', '未知服务器')}\n"
+        f"型号: {item.get('planCode', 'N/A')}\n"
         f"内存: {item.get('memory', 'N/A')}\n"
         f"硬盘: {item.get('storage', 'N/A')}\n"
         f"可用机房: {dcs}"
     )
 
 
+def build_new_availability_feishu_card(item, message_uuid: str, account_id=None):
+    memory_options = [item.get('memory', 'N/A')]
+    buttons = build_new_server_memory_buttons('feishu', message_uuid, memory_options)
+    return build_feishu_order_card(
+        '实时可用性新增服务器',
+        build_new_availability_server_message(item, account_id),
+        buttons
+    )
+
+
 def get_new_server_context(uuid_value):
-    monitor_obj = get_monitor_for_account()
-    if not (uuid_value and monitor_obj and hasattr(monitor_obj, 'message_uuid_cache')):
+    if not uuid_value:
         return None
-    ctx = getattr(monitor_obj, 'message_uuid_cache', {}).get(uuid_value)
-    if not ctx:
-        return None
-    timestamp = ctx.get('timestamp', 0)
-    ttl = getattr(monitor_obj, 'message_uuid_cache_ttl', 24 * 3600)
-    if time.time() - timestamp > ttl:
-        try:
-            del monitor_obj.message_uuid_cache[uuid_value]
-        except Exception:
-            pass
-        return None
-    return ctx
+    candidate_monitors = []
+    if monitor:
+        candidate_monitors.append(monitor)
+    for mon in monitors.values():
+        if mon not in candidate_monitors:
+            candidate_monitors.append(mon)
+    for monitor_obj in candidate_monitors:
+        if not hasattr(monitor_obj, 'message_uuid_cache'):
+            continue
+        ctx = getattr(monitor_obj, 'message_uuid_cache', {}).get(uuid_value)
+        if not ctx:
+            continue
+        timestamp = ctx.get('timestamp', 0)
+        ttl = getattr(monitor_obj, 'message_uuid_cache_ttl', 24 * 3600)
+        if time.time() - timestamp > ttl:
+            try:
+                del monitor_obj.message_uuid_cache[uuid_value]
+            except Exception:
+                pass
+            return None
+        return ctx
+    return None
 
 
 def save_new_server_context(uuid_value, ctx):
-    monitor_obj = get_monitor_for_account()
+    monitor_obj = get_monitor_for_account((ctx or {}).get('accountId'))
     if monitor_obj and hasattr(monitor_obj, 'message_uuid_cache'):
         monitor_obj.message_uuid_cache[uuid_value] = ctx
 
@@ -1553,6 +1740,20 @@ def build_new_server_retry_warning_buttons(channel: str, uuid_value: str):
     return build_new_server_buttons(channel, uuid_value, 'new_server_retry_short_confirm', options)
 
 
+def recover_new_server_options(plan_code, memory, storage, account_id=None):
+    configs_data = check_server_availability_with_configs(plan_code, account_id) or {}
+    target_memory = standardize_config(memory) if memory else ""
+    target_storage = standardize_config(storage) if storage else ""
+    for _, config_data in configs_data.items():
+        cfg_memory = standardize_config(config_data.get('memory')) if config_data.get('memory') else ""
+        cfg_storage = standardize_config(config_data.get('storage')) if config_data.get('storage') else ""
+        if cfg_memory == target_memory and cfg_storage == target_storage:
+            options = config_data.get('options')
+            if isinstance(options, list):
+                return options
+    return []
+
+
 def build_new_server_step_message(ctx, step_name):
     base = (
         f"名称: {ctx.get('serverName', '未知服务器')}\n"
@@ -1578,7 +1779,7 @@ def build_new_server_card(channel: str, uuid_value: str, ctx, step_name, buttons
 
 
 def create_monitor_from_new_server(channel: str, user_key: str, ctx):
-    account_id = get_effective_bot_account(channel, user_key)
+    account_id = ctx.get('accountId') or get_effective_bot_account(channel, user_key)
     if not account_id:
         return '当前没有可用的 API 账户。'
     mon = get_monitor_for_account(account_id)
@@ -1601,14 +1802,15 @@ def create_monitor_from_new_server(channel: str, user_key: str, ctx):
 
 
 def create_queue_from_new_server(channel: str, user_key: str, ctx):
-    account_id = get_effective_bot_account(channel, user_key)
+    account_id = ctx.get('accountId') or get_effective_bot_account(channel, user_key)
     if not account_id:
         return '当前没有可用的 API 账户。'
+    queue_options = ctx.get('options') if isinstance(ctx.get('options'), list) else []
     queue_item = {
         'id': str(uuid.uuid4()),
         'planCode': ctx.get('planCode'),
         'datacenters': [ctx.get('selectedDatacenter')] if ctx.get('selectedDatacenter') else [],
-        'options': [],
+        'options': queue_options,
         'status': 'running',
         'createdAt': datetime.now().isoformat(),
         'updatedAt': datetime.now().isoformat(),
@@ -1689,15 +1891,27 @@ def build_alias_list_message():
     return '\n'.join(lines).strip()
 
 
-def build_new_server_discovery_message(item):
+def build_new_server_discovery_message(item, account_id=None):
     dcs = ', '.join([dc.upper() for dc in item.get('datacenters') or []]) or '无'
+    account_line = f"账户: {get_account_label(account_id)}\n" if account_id else ""
     return (
         "🆕 服务器列表发现新增服务器\n\n"
+        f"{account_line}"
         f"名称: {item.get('name', '未知服务器')}\n"
         f"型号: {item.get('planCode', 'N/A')}\n"
         f"内存: {item.get('memory', 'N/A')}\n"
         f"硬盘: {item.get('storage', 'N/A')}\n"
         f"可用机房: {dcs}"
+    )
+
+
+def build_new_server_discovery_feishu_card(item, message_uuid: str, account_id=None):
+    memory_options = [item.get('memory', 'N/A')]
+    buttons = build_new_server_memory_buttons('feishu', message_uuid, memory_options)
+    return build_feishu_order_card(
+        '新增服务器通知',
+        build_new_server_discovery_message(item, account_id),
+        buttons
     )
 
 
@@ -1721,16 +1935,29 @@ def build_new_server_memory_buttons(channel: str, message_uuid: str, options: li
 
 def run_servers_auto_refresh_once():
     global server_plans
-    client = get_ovh_client()
-    if not client:
+    account_ids = get_auto_refresh_account_ids()
+    if not account_ids:
         return
-    api_servers = load_server_list()
-    if not api_servers:
+    merged_snapshot_items = {}
+    primary_servers = None
+    primary_account_id = None
+    for account_id in account_ids:
+        client = get_ovh_client(account_id)
+        if not client:
+            continue
+        api_servers = load_server_list(account_id)
+        if not api_servers:
+            continue
+        if primary_servers is None:
+            primary_servers = api_servers
+            primary_account_id = account_id
+        merged_snapshot_items.update(get_servers_snapshot_items_for_account(account_id, api_servers))
+    if primary_servers is None:
         return
-    server_plans = api_servers
-    server_list_cache['data'] = api_servers
+    server_plans = primary_servers
+    server_list_cache['data'] = primary_servers
     server_list_cache['timestamp'] = time.time()
-    current_items = get_servers_snapshot_items(api_servers)
+    current_items = merged_snapshot_items
     previous_items = (servers_snapshot or {}).get('items') or {}
     is_initial_snapshot = len(previous_items) == 0
     new_items = diff_new_items(previous_items, current_items)
@@ -1739,15 +1966,19 @@ def run_servers_auto_refresh_once():
     if config.get('serversNewServerNotifyEnabled') and (not is_initial_snapshot):
         for item in new_items:
             message_uuid = str(uuid.uuid4())
-            monitor_obj = get_monitor_for_account()
+            account_id = item.get('accountId') or primary_account_id
+            monitor_obj = get_monitor_for_account(account_id)
             memory_options = [item.get('memory', 'N/A')]
             storage_options = [item.get('storage', 'N/A')]
+            hardware_options = recover_new_server_options(item.get('planCode'), item.get('memory'), item.get('storage'), account_id)
             if hasattr(monitor_obj, 'message_uuid_cache'):
                 monitor_obj.message_uuid_cache[message_uuid] = {
                     'type': 'new_server_discovery',
                     'source': 'servers_list',
+                    'accountId': account_id,
                     'planCode': item.get('planCode'),
                     'serverName': item.get('name'),
+                    'options': hardware_options,
                     'memoryOptions': memory_options,
                     'storageOptions': storage_options,
                     'datacenterOptions': item.get('datacenters') or [],
@@ -1761,24 +1992,69 @@ def run_servers_auto_refresh_once():
                     'timestamp': time.time()
                 }
             tg_buttons = build_new_server_memory_buttons('telegram', message_uuid, memory_options)
-            send_bot_message(build_new_server_discovery_message(item), reply_markup=build_tg_inline_keyboard(tg_buttons, row_size=2))
+            feishu_card = build_new_server_discovery_feishu_card(item, message_uuid, account_id)
+            send_bot_message(
+                build_new_server_discovery_message(item, account_id),
+                reply_markup=build_tg_inline_keyboard(tg_buttons, row_size=2),
+                account_id=account_id,
+                feishu_card=feishu_card
+            )
 
 
 def run_availability_auto_refresh_once():
     endpoint = config.get('endpoint', 'ovh-eu')
     base_url = get_api_base_url_for(endpoint)
     api_url = f"{base_url}/v1/dedicated/server/datacenter/availabilities"
+    account_ids = get_auto_refresh_account_ids()
+    if not account_ids:
+        return
+    preferred_account_id = account_ids[0]
     response = requests.get(api_url, timeout=30)
     response.raise_for_status()
     data = response.json()
     current_items = get_availability_snapshot_items(data if isinstance(data, list) else [])
+    if not current_items:
+        return
     previous_items = (availability_snapshot or {}).get('items') or {}
     is_initial_snapshot = len(previous_items) == 0
     new_items = diff_new_items(previous_items, current_items)
     save_availability_snapshot_data(current_items)
     if config.get('availabilityNewServerNotifyEnabled') and (not is_initial_snapshot):
         for item in new_items:
-            send_bot_message(build_new_availability_server_message(item))
+            message_uuid = str(uuid.uuid4())
+            account_id = preferred_account_id
+            monitor_obj = get_monitor_for_account(account_id)
+            memory_options = [item.get('memory', 'N/A')]
+            storage_options = [item.get('storage', 'N/A')]
+            hardware_options = recover_new_server_options(item.get('planCode'), item.get('memory'), item.get('storage'), account_id)
+            if hasattr(monitor_obj, 'message_uuid_cache'):
+                monitor_obj.message_uuid_cache[message_uuid] = {
+                    'type': 'new_server_discovery',
+                    'source': 'availability',
+                    'accountId': account_id,
+                    'planCode': item.get('planCode'),
+                    'serverName': item.get('server'),
+                    'options': hardware_options,
+                    'memoryOptions': memory_options,
+                    'storageOptions': storage_options,
+                    'datacenterOptions': item.get('datacenters') or [],
+                    'selectedMemory': None,
+                    'selectedStorage': None,
+                    'selectedDatacenter': None,
+                    'selectedAction': None,
+                    'selectedQuantity': None,
+                    'selectedAutoPay': None,
+                    'selectedRetryInterval': None,
+                    'timestamp': time.time()
+                }
+            tg_buttons = build_new_server_memory_buttons('telegram', message_uuid, memory_options)
+            feishu_card = build_new_availability_feishu_card(item, message_uuid, account_id)
+            send_bot_message(
+                build_new_availability_server_message(item, account_id),
+                reply_markup=build_tg_inline_keyboard(tg_buttons, row_size=2),
+                account_id=account_id,
+                feishu_card=feishu_card
+            )
 
 
 def servers_auto_refresh_loop():
@@ -2172,9 +2448,13 @@ def send_feishu_card(card: dict, open_id=None, account_id=None):
         return False
 
 
-def send_multi_channel_message(message: str, reply_markup=None, account_id=None):
-    tg_ok = send_telegram_msg(message, reply_markup)
-    fs_ok = send_feishu_text(message, account_id=account_id)
+def send_multi_channel_message(message: str, reply_markup=None, account_id=None, feishu_card=None):
+    tg_ok = send_telegram_msg(message, reply_markup, account_id=account_id)
+    fs_ok = False
+    if feishu_card:
+        fs_ok = send_feishu_card(feishu_card, account_id=account_id)
+    if not fs_ok:
+        fs_ok = send_feishu_text(message, account_id=account_id)
     return tg_ok or fs_ok
 
 
@@ -2256,6 +2536,13 @@ def build_feishu_card_from_tg_markup(message: str, reply_markup):
                 value["quantity"] = callback_obj.get("q")
             if callback_obj.get("p") is not None:
                 value["autoPay"] = bool(int(callback_obj.get("p"))) if str(callback_obj.get("p")).isdigit() else callback_obj.get("p")
+            if callback_obj.get("value") is not None:
+                value["value"] = callback_obj.get("value")
+            for key, item in callback_obj.items():
+                if key in ["a", "action", "u", "i", "q", "p", "value"]:
+                    continue
+                if key not in value:
+                    value[key] = item
             actions.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": button.get("text", "操作")},
@@ -4238,7 +4525,7 @@ def save_raw_api_response(client, zone):
         add_log("WARNING", f"保存API原始响应时出错: {str(e)}")
 
 #移植过来的 send_telegram_msg 函数，适配 app.py 的 config
-def send_telegram_msg(message: str, reply_markup=None):
+def send_telegram_msg(message: str, reply_markup=None, account_id=None):
     """
     发送Telegram消息
     
@@ -4247,7 +4534,7 @@ def send_telegram_msg(message: str, reply_markup=None):
         reply_markup: 可选的内联键盘（InlineKeyboardMarkup格式）
     """
     # 使用 app.py 的全局 config 字典
-    acc_cfg = get_current_account_config()
+    acc_cfg = get_current_account_config(account_id)
     tg_token = acc_cfg.get("tgToken") or config.get("tgToken")
     tg_chat_id = acc_cfg.get("tgChatId") or config.get("tgChatId")
 
@@ -4300,10 +4587,12 @@ def send_telegram_msg(message: str, reply_markup=None):
         return False
 
 
-def send_bot_message(message: str, reply_markup=None, account_id=None):
-    tg_ok = send_telegram_msg(message, reply_markup)
+def send_bot_message(message: str, reply_markup=None, account_id=None, feishu_card=None):
+    tg_ok = send_telegram_msg(message, reply_markup, account_id=account_id)
     fs_ok = False
-    if reply_markup:
+    if feishu_card:
+        fs_ok = send_feishu_card(feishu_card, account_id=account_id)
+    if (not fs_ok) and reply_markup:
         card = build_feishu_card_from_tg_markup(message, reply_markup)
         if card:
             fs_ok = send_feishu_card(card, account_id=account_id)
@@ -4330,15 +4619,26 @@ def init_monitor():
     return monitor
 
 def get_monitor_for_account(account_id=None):
-    global monitor
-    if not monitor:
-        monitor = ServerMonitor(
+    global monitor, monitors
+    aid = account_id
+    if not aid:
+        if monitor:
+            return monitor
+        aid = next(iter(accounts.keys())) if accounts else None
+    if aid in monitors:
+        mon = monitors[aid]
+    else:
+        mon = ServerMonitor(
             check_availability_func=check_server_availability_with_configs,
             send_notification_func=send_bot_message,
             add_log_func=add_log,
-            account_id=None
+            account_id=aid
         )
-    return monitor
+        if aid:
+            monitors[aid] = mon
+    if not monitor:
+        monitor = mon
+    return mon
 
 # 保存订阅数据
 def save_subscriptions(account_id=None):
@@ -4349,9 +4649,10 @@ def save_subscriptions(account_id=None):
             "known_servers": list(mon.known_servers),
             "check_interval": mon.check_interval or 20
         }
-        with open(SUBSCRIPTIONS_FILE, 'w', encoding='utf-8') as f:
+        path = get_subscriptions_file(account_id)
+        with open(path, 'w', encoding='utf-8') as f:
             json.dump(subscriptions_data, f, ensure_ascii=False, indent=2)
-        add_log("INFO", "订阅数据已保存", "monitor")
+        add_log("INFO", f"订阅数据已保存: {os.path.basename(path)}", "monitor")
     except Exception as e:
         add_log("ERROR", f"保存订阅数据失败: {str(e)}", "monitor")
 
@@ -5505,7 +5806,18 @@ def telegram_webhook():
                     return jsonify({"ok": False, "error": 'expired'}), 400
                 ctx['selectedStorage'] = value
                 save_new_server_context(uuid_value, ctx)
-                buttons = build_new_server_buttons('telegram', uuid_value, 'new_server_select_datacenter', ctx.get('datacenterOptions') or [])
+                datacenter_options = ctx.get('datacenterOptions') or []
+                if not datacenter_options:
+                    buttons = build_new_server_action_buttons('telegram', uuid_value)
+                    if tg_token:
+                        _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                            "chat_id": chat_id,
+                            "text": build_new_server_step_message(ctx, 'action'),
+                            "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
+                            "reply_to_message_id": message_id
+                        }, 10)
+                    return jsonify({"ok": True})
+                buttons = build_new_server_buttons('telegram', uuid_value, 'new_server_select_datacenter', datacenter_options)
                 if tg_token:
                     _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
                         "chat_id": chat_id,
@@ -5549,6 +5861,15 @@ def telegram_webhook():
                             "reply_to_message_id": message_id
                         }, 10)
                     return jsonify({"ok": True})
+                ok_to_prompt, blocked_message = ensure_new_server_pending_slot('telegram', str(user_id), uuid_value)
+                if not ok_to_prompt:
+                    if tg_token:
+                        _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                            "chat_id": chat_id,
+                            "text": blocked_message,
+                            "reply_to_message_id": message_id
+                        }, 10)
+                    return jsonify({"ok": True})
                 set_bot_pending_action('telegram', str(user_id), {'type': 'new_server_quantity_input', 'uuid': uuid_value})
                 if tg_token:
                     _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
@@ -5566,6 +5887,15 @@ def telegram_webhook():
                     return jsonify({"ok": False, "error": 'expired'}), 400
                 ctx['selectedAutoPay'] = value
                 save_new_server_context(uuid_value, ctx)
+                ok_to_prompt, blocked_message = ensure_new_server_pending_slot('telegram', str(user_id), uuid_value)
+                if not ok_to_prompt:
+                    if tg_token:
+                        _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                            "chat_id": chat_id,
+                            "text": blocked_message,
+                            "reply_to_message_id": message_id
+                        }, 10)
+                    return jsonify({"ok": True})
                 set_bot_pending_action('telegram', str(user_id), {'type': 'new_server_retry_interval_input', 'uuid': uuid_value})
                 if tg_token:
                     _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
@@ -5582,6 +5912,15 @@ def telegram_webhook():
                 if not ctx:
                     return jsonify({"ok": False, "error": 'expired'}), 400
                 if value == 'modify':
+                    ok_to_prompt, blocked_message = ensure_new_server_pending_slot('telegram', str(user_id), uuid_value)
+                    if not ok_to_prompt:
+                        if tg_token:
+                            _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                                "chat_id": chat_id,
+                                "text": blocked_message,
+                                "reply_to_message_id": message_id
+                            }, 10)
+                        return jsonify({"ok": True})
                     set_bot_pending_action('telegram', str(user_id), {'type': 'new_server_retry_interval_input', 'uuid': uuid_value})
                     if tg_token:
                         _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
@@ -5727,8 +6066,7 @@ def feishu_events():
     if challenge:
         return jsonify({"challenge": challenge})
 
-    verify_token = body.get("token", "") or header.get("token", "")
-    app_id = body.get("app_id", "") or header.get("app_id", "")
+    verify_token, app_id = extract_feishu_verify_values(body)
     token_valid = feishu_client.verify_token(verify_token)
     app_id_valid = feishu_client.verify_app_id(app_id)
     if not token_valid and not app_id_valid:
@@ -5772,24 +6110,37 @@ def feishu_card_action():
     if challenge:
         return jsonify({"challenge": challenge})
 
-    header = body.get("header") or {}
-    verify_token = body.get("token", "") or header.get("token", "")
-    app_id = body.get("app_id", "") or header.get("app_id", "")
+    verify_token, app_id = extract_feishu_verify_values(body)
     token_valid = feishu_client.verify_token(verify_token)
     app_id_valid = feishu_client.verify_app_id(app_id)
     if (verify_token or app_id) and (not token_valid and not app_id_valid):
         add_log("WARNING", f"飞书卡片回调校验失败: token={verify_token or '-'}, app_id={app_id or '-'}", "feishu")
         return jsonify({"code": 1, "msg": "invalid token"}), 403
 
-    open_id = extract_feishu_open_id(body)
-    action_obj = body.get("action") or {}
-    action = action_obj.get("value") or {}
-    if not action and isinstance(action_obj.get("form_value"), dict):
-        action = action_obj.get("form_value") or {}
-    action_name = action.get("action")
-    add_log("INFO", f"收到飞书卡片回调: action={action_name or '-'}, open_id={open_id or '-'}", "feishu")
+    normalized = normalize_feishu_card_action_payload(body)
+    event_type = normalized.get("event_type")
+    open_id = normalized.get("open_id")
+    user_name = normalized.get("user_name")
+    action = normalized.get("action") or {}
+    action_name = normalized.get("action_name")
+    callback_id = normalized.get("callback_id")
+    dedupe_key = normalized.get("dedupe_key")
+    add_log("INFO", f"收到飞书卡片回调: event_type={event_type or '-'}, action={action_name or '-'}, open_id={open_id or '-'}, callback_id={callback_id or '-'}", "feishu")
     if open_id:
-        bind_feishu_user(open_id)
+        bind_feishu_user(open_id, user_name)
+    if dedupe_key:
+        if dedupe_key in processed_callback_ids:
+            add_log("INFO", f"忽略重复飞书卡片回调: dedupe_key={dedupe_key[:200]}", "feishu")
+            return jsonify({"toast": {"type": "info", "content": "操作已处理"}})
+        processed_callback_ids.add(dedupe_key)
+
+    if event_type and event_type not in ['card.action.trigger', 'card.action.trigger_v1']:
+        add_log("WARNING", f"忽略不支持的飞书卡片事件类型: {event_type}", "feishu")
+        return jsonify({"code": 0})
+
+    if not action_name:
+        add_log("WARNING", f"飞书卡片回调缺少 action: event_type={event_type or '-'}, raw_action={json.dumps(normalized.get('raw_action') or {}, ensure_ascii=False)[:500]}", "feishu")
+        return jsonify({"toast": {"type": "error", "content": "未识别到操作参数"}}), 400
 
     if action_name == "add_to_queue":
         plan_code = action.get("planCode")
@@ -5939,7 +6290,12 @@ def feishu_card_action():
             return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
         ctx['selectedStorage'] = value
         save_new_server_context(uuid_value, ctx)
-        buttons = build_new_server_buttons('feishu', uuid_value, 'new_server_select_datacenter', ctx.get('datacenterOptions') or [])
+        datacenter_options = ctx.get('datacenterOptions') or []
+        if not datacenter_options:
+            buttons = build_new_server_action_buttons('feishu', uuid_value)
+            send_feishu_card(build_feishu_order_card('新增服务器交互', build_new_server_step_message(ctx, 'action'), buttons), open_id=open_id)
+            return jsonify({"toast": {"type": "info", "content": "当前未提供机房选项，已跳过机房选择"}})
+        buttons = build_new_server_buttons('feishu', uuid_value, 'new_server_select_datacenter', datacenter_options)
         send_feishu_card(build_feishu_order_card('新增服务器交互', build_new_server_step_message(ctx, 'datacenter'), buttons), open_id=open_id)
         return jsonify({"toast": {"type": "info", "content": "请选择数据中心"}})
 
@@ -5965,6 +6321,9 @@ def feishu_card_action():
         save_new_server_context(uuid_value, ctx)
         if value == 'monitor':
             return jsonify({"toast": {"type": "success", "content": create_monitor_from_new_server('feishu', open_id or 'anonymous', ctx)}})
+        ok_to_prompt, blocked_message = ensure_new_server_pending_slot('feishu', open_id or 'anonymous', uuid_value)
+        if not ok_to_prompt:
+            return jsonify({"toast": {"type": "error", "content": blocked_message}})
         set_bot_pending_action('feishu', open_id or 'anonymous', {'type': 'new_server_quantity_input', 'uuid': uuid_value})
         send_feishu_text('请直接回复抢购数量（1-100）', open_id=open_id)
         return jsonify({"toast": {"type": "info", "content": "请直接回复抢购数量"}})
@@ -5977,6 +6336,9 @@ def feishu_card_action():
             return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
         ctx['selectedAutoPay'] = value
         save_new_server_context(uuid_value, ctx)
+        ok_to_prompt, blocked_message = ensure_new_server_pending_slot('feishu', open_id or 'anonymous', uuid_value)
+        if not ok_to_prompt:
+            return jsonify({"toast": {"type": "error", "content": blocked_message}})
         set_bot_pending_action('feishu', open_id or 'anonymous', {'type': 'new_server_retry_interval_input', 'uuid': uuid_value})
         send_feishu_text('请直接回复抢购失败后的重试间隔，单位为秒（1-3600）', open_id=open_id)
         return jsonify({"toast": {"type": "info", "content": "请直接回复重试间隔"}})
@@ -5988,6 +6350,9 @@ def feishu_card_action():
         if not ctx:
             return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
         if value == 'modify':
+            ok_to_prompt, blocked_message = ensure_new_server_pending_slot('feishu', open_id or 'anonymous', uuid_value)
+            if not ok_to_prompt:
+                return jsonify({"toast": {"type": "error", "content": blocked_message}})
             set_bot_pending_action('feishu', open_id or 'anonymous', {'type': 'new_server_retry_interval_input', 'uuid': uuid_value})
             send_feishu_text('请重新回复抢购失败后的重试间隔，单位为秒（1-3600）', open_id=open_id)
             return jsonify({"toast": {"type": "info", "content": "请重新输入重试间隔"}})
@@ -11990,9 +12355,10 @@ if __name__ == '__main__':
     # Load data first (会加载订阅数据)
     load_data()
     
-    monitor.check_interval = 20
-    save_subscriptions()
-    print(f"监控检查间隔初始化为: {monitor.check_interval}秒")
+    if monitor:
+        monitor.check_interval = monitor.check_interval or 20
+        save_subscriptions(monitor.account_id)
+        print(f"监控检查间隔初始化为: {monitor.check_interval}秒")
     
     # 只在主进程启动后台线程（避免Flask reloader重复启动）
     # 使用环境变量判断是否为主进程
@@ -12018,12 +12384,17 @@ if __name__ == '__main__':
     else:
         print("跳过后台线程启动（等待主进程）")
     
-    # 自动启动服务器监控（如果有订阅）
-    monitor.check_interval = monitor.check_interval or 20
-    
-    if len(monitor.subscriptions) > 0:
+    # 自动启动各账户服务器监控（如果有订阅）
+    started_monitors = 0
+    for aid, mon in list(monitors.items()):
+        mon.check_interval = mon.check_interval or 20
+        if len(mon.subscriptions) > 0:
+            mon.start()
+            started_monitors += 1
+            add_log("INFO", f"自动启动服务器监控（账户: {aid or 'default'}，订阅: {len(mon.subscriptions)}）")
+    if started_monitors == 0 and monitor and len(monitor.subscriptions) > 0 and not monitor.running:
         monitor.start()
-        add_log("INFO", f"自动启动服务器监控（{len(monitor.subscriptions)} 个订阅，检查间隔: 5秒）")
+        add_log("INFO", f"自动启动默认服务器监控（{len(monitor.subscriptions)} 个订阅）")
     
     # Add initial log
     add_log("INFO", "Server started")
