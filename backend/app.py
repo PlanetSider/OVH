@@ -914,6 +914,7 @@ def build_bot_help_message():
         "/monitor-all - 查看所有API账户监控任务\n"
         "/autobuy - 查看当前抢购任务\n"
         "/autobuy-all - 查看所有API账户抢购任务\n"
+        "/reboot <服务器自定义名称> - 在所有API账户下查找服务器并确认重启\n"
         "/switch - 依次循环切换 API 账户\n"
         "/switch <邮箱> - 切换到指定邮箱对应的 API 账户\n\n"
         "/alias - 为所有API账户下服务器绑定别名\n\n"
@@ -1232,6 +1233,130 @@ def build_alias_server_message(account_alias):
 
 def build_unalias_server_message(account_alias):
     return f"已选择账户：{account_alias}\n请选择要移除别名的服务器："
+
+
+def build_reboot_target_message():
+    return "请选择要重启的服务器："
+
+
+def build_reboot_confirm_message(server):
+    return (
+        "确认重启以下服务器吗？\n\n"
+        f"账户: {server.get('accountAlias')}\n"
+        f"服务器别名: {server.get('displayName')}\n"
+        f"服务名: {server.get('serviceName')}\n"
+        f"数据中心: {server.get('datacenter', 'N/A')}\n"
+        f"当前状态: {server.get('state', 'unknown')}"
+    )
+
+
+def build_reboot_target_buttons(channel: str, user_key: str, servers: list):
+    buttons = []
+    for server in servers:
+        label = f"{server.get('accountAlias')} | {server.get('displayName')}"
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({
+                    'a': 'reboot_select_target',
+                    'accountId': server.get('accountId'),
+                    'serviceName': server.get('serviceName'),
+                    'userKey': user_key
+                }, ensure_ascii=False, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {
+                    'action': 'reboot_select_target',
+                    'accountId': server.get('accountId'),
+                    'serviceName': server.get('serviceName'),
+                    'userKey': user_key
+                }
+            })
+    return buttons
+
+
+def build_reboot_confirm_buttons(channel: str, user_key: str, server):
+    options = [
+        {'label': '确认重启', 'value': 'confirm'},
+        {'label': '取消', 'value': 'cancel'}
+    ]
+    buttons = []
+    for option in options:
+        if channel == 'telegram':
+            buttons.append({
+                'text': option['label'],
+                'callback_data': json.dumps({
+                    'a': 'reboot_confirm',
+                    'accountId': server.get('accountId'),
+                    'serviceName': server.get('serviceName'),
+                    'decision': option['value'],
+                    'userKey': user_key
+                }, ensure_ascii=False, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': option['label']},
+                'type': 'default',
+                'value': {
+                    'action': 'reboot_confirm',
+                    'accountId': server.get('accountId'),
+                    'serviceName': server.get('serviceName'),
+                    'decision': option['value'],
+                    'userKey': user_key
+                }
+            })
+    return buttons
+
+
+def find_servers_for_reboot(keyword: str):
+    all_servers = list_all_account_servers()
+    if not keyword:
+        return []
+    term = keyword.strip()
+    term_lower = term.lower()
+
+    def exact_match(server):
+        return (
+            str(server.get('displayName', '')).strip() == term or
+            str(server.get('serviceName', '')).strip() == term
+        )
+
+    def exact_casefold(server):
+        return (
+            str(server.get('displayName', '')).strip().lower() == term_lower or
+            str(server.get('serviceName', '')).strip().lower() == term_lower
+        )
+
+    def contains_match(server):
+        return (
+            term_lower in str(server.get('displayName', '')).lower() or
+            term_lower in str(server.get('serviceName', '')).lower()
+        )
+
+    matches = [s for s in all_servers if exact_match(s)]
+    if matches:
+        return matches
+    matches = [s for s in all_servers if exact_casefold(s)]
+    if matches:
+        return matches
+    return [s for s in all_servers if contains_match(s)]
+
+
+def reboot_server_for_bot(account_id, service_name):
+    client = get_ovh_client(account_id)
+    if not client:
+        return False, "未配置或无法初始化对应账户的 OVH API。"
+    try:
+        result = client.post(f'/dedicated/server/{service_name}/reboot')
+        task_id = result.get('taskId') if isinstance(result, dict) else None
+        return True, f"已向服务器发送重启请求\n服务名: {service_name}" + (f"\n任务ID: {task_id}" if task_id else "")
+    except Exception as e:
+        return False, f"重启服务器失败: {str(e)}"
 
 
 def build_tg_inline_keyboard(buttons, row_size=2):
@@ -1913,6 +2038,36 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
         return {"text": build_autobuy_message(effective_account)}
     if lower == '/autobuy-all':
         return {"text": build_autobuy_all_message()}
+    if lower.startswith('/reboot'):
+        parts = normalized.split(maxsplit=1)
+        keyword = parts[1].strip() if len(parts) > 1 else ''
+        if not keyword:
+            return {'text': '请输入服务器自定义名称，例如：/reboot Web-01'}
+        matches = find_servers_for_reboot(keyword)
+        if not matches:
+            return {'text': f'未找到名称为 {keyword} 的服务器\n请确认名称是否正确，或先使用 /status-all 查看所有账户服务器'}
+        if len(matches) == 1:
+            server = matches[0]
+            buttons = build_reboot_confirm_buttons(channel, user_key, server)
+            if channel == 'telegram':
+                return {
+                    'text': build_reboot_confirm_message(server),
+                    'reply_markup': build_tg_inline_keyboard(buttons, row_size=2)
+                }
+            return {
+                'text': build_reboot_confirm_message(server),
+                'card': build_feishu_order_card('确认重启服务器', build_reboot_confirm_message(server), buttons)
+            }
+        buttons = build_reboot_target_buttons(channel, user_key, matches)
+        if channel == 'telegram':
+            return {
+                'text': build_reboot_target_message(),
+                'reply_markup': build_tg_inline_keyboard(buttons, row_size=1)
+            }
+        return {
+            'text': build_reboot_target_message(),
+            'card': build_feishu_order_card('选择要重启的服务器', build_reboot_target_message(), buttons)
+        }
     if lower.startswith('/switch'):
         parts = normalized.split(maxsplit=1)
         email = parts[1].strip() if len(parts) > 1 else None
@@ -5250,6 +5405,35 @@ def telegram_webhook():
                     }, 10)
                 return jsonify({"ok": True})
 
+            elif action == 'reboot_select_target':
+                account_id = callback_data_obj.get('accountId')
+                service_name = callback_data_obj.get('serviceName')
+                server = next((s for s in find_servers_for_reboot(service_name) if s.get('accountId') == account_id and s.get('serviceName') == service_name), None)
+                if server and tg_token:
+                    buttons = build_reboot_confirm_buttons('telegram', str(user_id), server)
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": build_reboot_confirm_message(server),
+                        "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'reboot_confirm':
+                account_id = callback_data_obj.get('accountId')
+                service_name = callback_data_obj.get('serviceName')
+                decision = callback_data_obj.get('decision')
+                message_text = '已取消重启操作'
+                if decision != 'cancel':
+                    ok, message_text = reboot_server_for_bot(account_id, service_name)
+                if tg_token:
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": message_text,
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+            
             elif action == 'new_server_select_memory':
                 uuid_value = callback_data_obj.get('u') or callback_data_obj.get('uuid')
                 value = callback_data_obj.get('value')
@@ -5666,6 +5850,25 @@ def feishu_card_action():
         service_name = action.get('serviceName')
         existed = remove_server_alias(account_id, service_name)
         return jsonify({"toast": {"type": "success", "content": ("已移除服务器别名" if existed else "该服务器当前没有别名")}})
+
+    if action_name == 'reboot_select_target':
+        account_id = action.get('accountId')
+        service_name = action.get('serviceName')
+        server = next((s for s in find_servers_for_reboot(service_name) if s.get('accountId') == account_id and s.get('serviceName') == service_name), None)
+        if not server:
+            return jsonify({"toast": {"type": "error", "content": "未找到目标服务器"}})
+        buttons = build_reboot_confirm_buttons('feishu', open_id or 'anonymous', server)
+        send_feishu_card(build_feishu_order_card('确认重启服务器', build_reboot_confirm_message(server), buttons), open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请确认是否重启"}})
+
+    if action_name == 'reboot_confirm':
+        account_id = action.get('accountId')
+        service_name = action.get('serviceName')
+        decision = action.get('decision')
+        if decision == 'cancel':
+            return jsonify({"toast": {"type": "info", "content": "已取消重启操作"}})
+        ok, message = reboot_server_for_bot(account_id, service_name)
+        return jsonify({"toast": {"type": "success" if ok else "error", "content": message}})
 
     if action_name == 'new_server_select_memory':
         uuid_value = action.get('uuid')
