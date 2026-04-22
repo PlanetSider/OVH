@@ -23,6 +23,7 @@ from telegram_utils import tg_send_message as tg_send
 from telegram_utils import processed_callback_ids
 from dotenv import load_dotenv
 from feishu_utils import FeishuClient
+from sqlite_storage import SQLiteStorage
 
 APP_VERSION = "v2.0.5"
 # 加载 .env 文件
@@ -39,7 +40,7 @@ from ovh_api_helper import get_global_helper
 DATA_DIR = "data"
 CACHE_DIR = "cache"
 LOGS_DIR = "logs"
-ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
+LEGACY_ACCOUNTS_JSON_PATH = os.path.join(DATA_DIR, "accounts.json")
 
 # Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -85,21 +86,22 @@ CORS(app, resources={
 # 初始化API密钥验证
 init_api_auth(app)
 
-# Data storage files (organized in data directory)
-CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
-LOGS_FILE = os.path.join(DATA_DIR, "logs.json")
-QUEUE_FILE = os.path.join(DATA_DIR, "queue.json")
-HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
-SERVERS_FILE = os.path.join(DATA_DIR, "servers.json")
-SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "subscriptions.json")
-CONFIG_SNIPER_FILE = os.path.join(DATA_DIR, "config_sniper_tasks.json")
-VPS_SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "vps_subscriptions.json")
-FEISHU_USERS_FILE = os.path.join(DATA_DIR, "feishu_users.json")
-BOT_USER_SELECTIONS_FILE = os.path.join(DATA_DIR, "bot_user_account_selections.json")
-SERVER_ALIASES_FILE = os.path.join(DATA_DIR, "server_aliases.json")
-BOT_PENDING_ACTIONS_FILE = os.path.join(DATA_DIR, "bot_pending_actions.json")
-SERVERS_SNAPSHOT_FILE = os.path.join(DATA_DIR, "servers_snapshot.json")
-AVAILABILITY_SNAPSHOT_FILE = os.path.join(DATA_DIR, "availability_snapshot.json")
+# Legacy JSON migration source paths (migration-only)
+LEGACY_CONFIG_JSON_PATH = os.path.join(DATA_DIR, "config.json")
+LEGACY_LOGS_JSON_PATH = os.path.join(DATA_DIR, "logs.json")
+LEGACY_QUEUE_JSON_PATH = os.path.join(DATA_DIR, "queue.json")
+LEGACY_HISTORY_JSON_PATH = os.path.join(DATA_DIR, "history.json")
+LEGACY_SERVERS_JSON_PATH = os.path.join(DATA_DIR, "servers.json")
+LEGACY_SUBSCRIPTIONS_JSON_PATH = os.path.join(DATA_DIR, "subscriptions.json")
+LEGACY_CONFIG_SNIPER_JSON_PATH = os.path.join(DATA_DIR, "config_sniper_tasks.json")
+LEGACY_VPS_SUBSCRIPTIONS_JSON_PATH = os.path.join(DATA_DIR, "vps_subscriptions.json")
+LEGACY_FEISHU_USERS_JSON_PATH = os.path.join(DATA_DIR, "feishu_users.json")
+LEGACY_BOT_USER_SELECTIONS_JSON_PATH = os.path.join(DATA_DIR, "bot_user_account_selections.json")
+LEGACY_SERVER_ALIASES_JSON_PATH = os.path.join(DATA_DIR, "server_aliases.json")
+LEGACY_BOT_PENDING_ACTIONS_JSON_PATH = os.path.join(DATA_DIR, "bot_pending_actions.json")
+LEGACY_SERVERS_SNAPSHOT_JSON_PATH = os.path.join(DATA_DIR, "servers_snapshot.json")
+LEGACY_AVAILABILITY_SNAPSHOT_JSON_PATH = os.path.join(DATA_DIR, "availability_snapshot.json")
+SQLITE_DB_FILE = os.path.join(DATA_DIR, "app.db")
 
 config = {
     "tgToken": "",
@@ -158,6 +160,7 @@ servers_snapshot = {"updatedAt": None, "items": {}}
 availability_snapshot = {"updatedAt": None, "items": {}}
 servers_auto_refresh_running = False
 availability_auto_refresh_running = False
+storage = SQLiteStorage(SQLITE_DB_FILE)
 
 # 全局删除任务ID集合（用于立即停止后台线程处理）
 deleted_task_ids = set()
@@ -311,126 +314,449 @@ def get_feishu_config():
 
 
 def get_subscriptions_file(account_id=None):
+    # Migration-only helper for historical subscriptions JSON paths.
     if account_id:
         return os.path.join(DATA_DIR, f"subscriptions_{account_id}.json")
-    return SUBSCRIPTIONS_FILE
+    return LEGACY_SUBSCRIPTIONS_JSON_PATH
+
+
+def read_json_file_if_exists(path, default=None):
+    # Migration helper: read a historical JSON file if it still exists.
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        if not content:
+            return default
+        return json.loads(content)
+    except Exception:
+        return default
+
+
+def get_storage_key_for_file(path):
+    normalized = os.path.normpath(path)
+    data_root = os.path.normpath(DATA_DIR) + os.sep
+    if normalized.startswith(data_root):
+        rel = normalized[len(data_root):]
+    else:
+        rel = os.path.basename(normalized)
+    return f"file:{rel.replace('\\', '/')}"
+
+
+def migrate_relational_data_to_sqlite():
+    if not storage.get_meta("relational_accounts_imported", False):
+        account_items = []
+        for account in accounts.values():
+            if isinstance(account, dict) and account.get("id"):
+                account_items.append(account)
+        if not account_items:
+            accounts_data = read_json_file_if_exists(LEGACY_ACCOUNTS_JSON_PATH, None)
+            if isinstance(accounts_data, dict):
+                raw_accounts = accounts_data.get("accounts")
+                if isinstance(raw_accounts, list):
+                    account_items = [a for a in raw_accounts if isinstance(a, dict) and a.get("id")]
+                elif isinstance(raw_accounts, dict):
+                    account_items = [a for a in raw_accounts.values() if isinstance(a, dict) and a.get("id")]
+        storage.replace_accounts(account_items)
+        storage.set_meta("relational_accounts_imported", True)
+
+    if not storage.get_meta("relational_queue_imported", False):
+        queue_items = read_json_file_if_exists(LEGACY_QUEUE_JSON_PATH, []) or []
+        if isinstance(queue_items, list):
+            storage.replace_queue_items(queue_items)
+        storage.set_meta("relational_queue_imported", True)
+
+    if not storage.get_meta("relational_purchase_history_imported", False):
+        history_items = read_json_file_if_exists(LEGACY_HISTORY_JSON_PATH, []) or []
+        if isinstance(history_items, list):
+            storage.replace_purchase_history(history_items)
+        storage.set_meta("relational_purchase_history_imported", True)
+
+
+def load_accounts_from_storage():
+    items = storage.load_accounts()
+    if not items:
+        return {}
+    return {a.get("id"): a for a in items if isinstance(a, dict) and a.get("id")}
+
+
+def load_queue_from_storage():
+    items = storage.load_queue_items()
+    return items if isinstance(items, list) else []
+
+
+def load_purchase_history_from_storage():
+    items = storage.load_purchase_history()
+    return items if isinstance(items, list) else []
+
+
+def upsert_queue_item_record(queue_item):
+    storage.upsert_queue_item(queue_item)
+
+
+def append_queue_item(queue_item):
+    queue.append(queue_item)
+    upsert_queue_item_record(queue_item)
+
+
+def replace_queue_items_in_memory(items):
+    global queue
+    queue = items
+    storage.replace_queue_items(queue)
+
+
+def delete_queue_item_record(item_id):
+    storage.delete_queue_item(item_id)
+
+
+def clear_queue_for_account(account_id):
+    global queue
+    queue = [item for item in queue if item.get("accountId") != account_id]
+    storage.delete_queue_items_by_account(account_id)
+
+
+def clear_all_queue_records():
+    queue.clear()
+    storage.clear_queue_items()
+
+
+def append_purchase_history_entry(entry):
+    purchase_history.append(entry)
+    storage.append_purchase_history(entry)
+
+
+def replace_purchase_history_in_memory(items):
+    global purchase_history
+    purchase_history = items
+    storage.replace_purchase_history(purchase_history)
+
+
+def clear_purchase_history_for_account(account_id):
+    global purchase_history
+    purchase_history = [h for h in purchase_history if h.get("accountId") != account_id]
+    storage.delete_purchase_history_by_account(account_id)
+
+
+def clear_all_purchase_history_records():
+    purchase_history.clear()
+    storage.clear_purchase_history()
+
+
+def save_accounts_to_relational_storage():
+    storage.replace_accounts(list(accounts.values()))
+
+
+def migrate_monitor_subscriptions_to_sqlite():
+    if storage.get_meta("relational_monitor_subscriptions_imported", False):
+        return
+    subscription_account_ids = list(accounts.keys()) if accounts else []
+    if not subscription_account_ids:
+        subscription_account_ids = [None]
+    legacy_subscriptions_data = read_json_file_if_exists(LEGACY_SUBSCRIPTIONS_JSON_PATH, None)
+    for idx, aid in enumerate(subscription_account_ids):
+        path = get_subscriptions_file(aid)
+        subscriptions_data = read_json_file_if_exists(path, None)
+        if subscriptions_data is None:
+            if aid is not None and idx == 0 and legacy_subscriptions_data:
+                subscriptions_data = legacy_subscriptions_data
+            elif aid is None and legacy_subscriptions_data:
+                subscriptions_data = legacy_subscriptions_data
+        if not isinstance(subscriptions_data, dict):
+            continue
+        storage.replace_monitor_subscriptions(
+            aid,
+            subscriptions_data.get("subscriptions") or [],
+            subscriptions_data.get("known_servers") or [],
+            subscriptions_data.get("check_interval") or 20,
+        )
+    storage.set_meta("relational_monitor_subscriptions_imported", True)
+
+
+def load_monitor_subscription_bundle(account_id=None):
+    return storage.load_monitor_subscriptions(account_id)
+
+
+def list_accounts_from_storage():
+    return storage.list_accounts()
+
+
+def list_queue_from_storage(scope='current', account_id=None, status='all', page=None, page_size=None):
+    effective_account_id = None if scope == 'all' else account_id
+    offset = None
+    limit = None
+    if page is not None and page_size is not None:
+        limit = page_size
+        offset = max(0, (page - 1) * page_size)
+    items = storage.list_queue_items(
+        account_id=effective_account_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    total = storage.count_queue_items(account_id=effective_account_id, status=status)
+    return items, total
+
+
+def list_purchase_history_from_storage(scope='current', account_id=None):
+    effective_account_id = None if scope == 'all' else account_id
+    return storage.list_purchase_history(account_id=effective_account_id)
+
+
+def count_active_queue_items(account_id=None):
+    return storage.count_queue_items_by_statuses(['running', 'pending', 'paused'], account_id=account_id)
+
+
+def count_purchase_history_status(status, account_id=None):
+    return storage.count_purchase_history_by_status(status, account_id=account_id)
+
+
+def list_runnable_queue_items_from_storage(now_ts, limit=None):
+    return storage.list_runnable_queue_items(
+        now_ts=now_ts,
+        processing_ids=processing_item_ids,
+        deleted_ids=deleted_task_ids,
+        limit=limit,
+    )
+
+
+def get_queue_item_from_storage(item_id):
+    return storage.get_queue_item(item_id)
+
+
+def sync_queue_item_to_memory(queue_item):
+    if not isinstance(queue_item, dict) or not queue_item.get("id"):
+        return
+    queue_id = queue_item.get("id")
+    with queue_lock:
+        for idx, existing in enumerate(queue):
+            if existing.get("id") == queue_id:
+                queue[idx] = queue_item
+                break
+        else:
+            queue.append(queue_item)
+
+
+def migrate_server_data_to_sqlite():
+    if not storage.get_meta("relational_server_data_imported", False):
+        server_items = read_json_file_if_exists(LEGACY_SERVERS_JSON_PATH, []) or []
+        if isinstance(server_items, list):
+            storage.replace_server_plans(server_items)
+        servers_snapshot_data = read_json_file_if_exists(LEGACY_SERVERS_SNAPSHOT_JSON_PATH, None)
+        if isinstance(servers_snapshot_data, dict):
+            storage.save_snapshot("servers", servers_snapshot_data)
+        availability_snapshot_data = read_json_file_if_exists(LEGACY_AVAILABILITY_SNAPSHOT_JSON_PATH, None)
+        if isinstance(availability_snapshot_data, dict):
+            storage.save_snapshot("availability", availability_snapshot_data)
+        storage.set_meta("relational_server_data_imported", True)
+
+
+def load_server_plans_from_storage():
+    return storage.load_server_plans()
+
+
+def save_server_plans_to_storage(items):
+    storage.replace_server_plans(items)
+
+
+def load_snapshot_from_storage(snapshot_type):
+    return storage.load_snapshot(snapshot_type)
+
+
+def save_snapshot_to_storage(snapshot_type, payload):
+    storage.save_snapshot(snapshot_type, payload)
+
+
+def migrate_bot_state_to_sqlite():
+    if not storage.get_meta("relational_bot_state_imported", False):
+        feishu_data = read_json_file_if_exists(LEGACY_FEISHU_USERS_JSON_PATH, None)
+        if isinstance(feishu_data, dict):
+            storage.replace_feishu_user_bindings(feishu_data)
+        selections_data = read_json_file_if_exists(LEGACY_BOT_USER_SELECTIONS_JSON_PATH, None)
+        if isinstance(selections_data, dict):
+            storage.replace_bot_account_selections(selections_data)
+        aliases_data = read_json_file_if_exists(LEGACY_SERVER_ALIASES_JSON_PATH, None)
+        if isinstance(aliases_data, dict):
+            storage.replace_server_aliases(aliases_data)
+        pending_data = read_json_file_if_exists(LEGACY_BOT_PENDING_ACTIONS_JSON_PATH, None)
+        if isinstance(pending_data, dict):
+            storage.replace_bot_pending_actions(pending_data)
+        storage.set_meta("relational_bot_state_imported", True)
+
+
+def load_feishu_users_from_storage():
+    return storage.load_feishu_user_bindings()
+
+
+def persist_feishu_users_state():
+    storage.replace_feishu_user_bindings(feishu_users)
+
+
+def load_bot_account_selections_from_storage():
+    return storage.load_bot_account_selections()
+
+
+def persist_bot_account_selections_state():
+    storage.replace_bot_account_selections(bot_user_account_selections)
+
+
+def load_server_aliases_from_storage():
+    return storage.load_server_aliases()
+
+
+def persist_server_aliases_state():
+    storage.replace_server_aliases(server_aliases)
+
+
+def load_bot_pending_actions_from_storage():
+    return storage.load_bot_pending_actions()
+
+
+def persist_bot_pending_actions_state():
+    storage.replace_bot_pending_actions(bot_pending_actions)
+
+
+def migrate_config_sniper_to_sqlite():
+    if not storage.get_meta("relational_config_sniper_imported", False):
+        tasks = read_json_file_if_exists(LEGACY_CONFIG_SNIPER_JSON_PATH, None)
+        if isinstance(tasks, list):
+            storage.replace_config_sniper_tasks(tasks)
+        storage.set_meta("relational_config_sniper_imported", True)
+
+
+def load_config_sniper_tasks_from_storage():
+    return storage.load_config_sniper_tasks()
+
+
+def persist_config_sniper_tasks_state():
+    storage.replace_config_sniper_tasks(config_sniper_tasks)
+
+
+def migrate_vps_subscriptions_to_sqlite():
+    if not storage.get_meta("relational_vps_subscriptions_imported", False):
+        data = read_json_file_if_exists(LEGACY_VPS_SUBSCRIPTIONS_JSON_PATH, None)
+        if isinstance(data, dict):
+            storage.replace_vps_subscriptions(data.get('subscriptions', []), data.get('check_interval', 60))
+        storage.set_meta("relational_vps_subscriptions_imported", True)
+
+
+def load_vps_subscriptions_from_storage():
+    return storage.load_vps_subscriptions()
+
+
+def persist_vps_subscriptions_state():
+    storage.replace_vps_subscriptions(vps_subscriptions, vps_check_interval)
+
+
+def persist_queue_state():
+    storage.replace_queue_items(queue)
+
+
+def persist_purchase_history_state():
+    storage.replace_purchase_history(purchase_history)
+
+
+def persist_server_data_state():
+    save_server_plans_to_storage(server_plans)
+    save_snapshot_to_storage("servers", servers_snapshot)
+    save_snapshot_to_storage("availability", availability_snapshot)
+
+
+def persist_runtime_state(include_logs=True):
+    if include_logs:
+        flush_logs()
+    persist_queue_state()
+    persist_purchase_history_state()
+
+
+def migrate_logs_to_sqlite():
+    if not storage.get_meta("relational_logs_imported", False):
+        logs_data = read_json_file_if_exists(LEGACY_LOGS_JSON_PATH, []) or []
+        if isinstance(logs_data, list):
+            storage.replace_logs(logs_data)
+        storage.set_meta("relational_logs_imported", True)
+
+
+def load_logs_from_storage():
+    return storage.load_logs(limit=1000)
+
+
+def append_log_to_storage(log_entry):
+    storage.append_log(log_entry, limit=1000)
+
+
+def clear_logs_in_storage():
+    storage.clear_logs()
+
+
+def migrate_config_to_sqlite():
+    if not storage.get_meta("relational_app_config_imported", False):
+        config_data = read_json_file_if_exists(LEGACY_CONFIG_JSON_PATH, None)
+        if isinstance(config_data, dict):
+            storage.save_config("main", config_data)
+        storage.set_meta("relational_app_config_imported", True)
+
+
+def load_config_from_storage():
+    return storage.load_config("main")
+
+
+def persist_config_state():
+    storage.save_config("main", config)
 
 
 feishu_client = FeishuClient(get_feishu_config, lambda level, message, source="feishu": add_log(level, message, source))
 
-# Load data from files if they exist
+# Load persisted application state
 def load_data():
     global config, logs, queue, purchase_history, server_plans, stats, config_sniper_tasks, vps_subscriptions, vps_check_interval, accounts, feishu_users, bot_user_account_selections, server_aliases, bot_pending_actions, servers_snapshot, availability_snapshot
     
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-        except json.JSONDecodeError:
-            print(f"警告: {CONFIG_FILE}文件格式不正确，使用默认值")
-    if os.path.exists(ACCOUNTS_FILE):
-        try:
-            with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
-                accounts_data = json.load(f)
-                accs = accounts_data.get("accounts")
-                if isinstance(accs, list):
-                    accounts = {a.get("id"): a for a in accs if a and a.get("id")}
-                elif isinstance(accs, dict):
-                    accounts = accs
-        except Exception as e:
-            print(f"警告: {ACCOUNTS_FILE}文件读取失败: {e}")
+    migrate_relational_data_to_sqlite()
+    migrate_monitor_subscriptions_to_sqlite()
+    migrate_server_data_to_sqlite()
+    migrate_bot_state_to_sqlite()
+    migrate_config_sniper_to_sqlite()
+    migrate_vps_subscriptions_to_sqlite()
+    migrate_logs_to_sqlite()
+    migrate_config_to_sqlite()
+    relational_accounts = load_accounts_from_storage()
+    if relational_accounts:
+        accounts = relational_accounts
+
+    config_data = load_config_from_storage()
+    if isinstance(config_data, dict):
+        config = config_data
+
+    logs_data = load_logs_from_storage()
+    if isinstance(logs_data, list):
+        logs = logs_data[-1000:]
+
+    queue_data = load_queue_from_storage()
+    if isinstance(queue_data, list):
+        queue = queue_data
+
+    history_data = load_purchase_history_from_storage()
+    if isinstance(history_data, list):
+        purchase_history = history_data
+
+    server_plans_data = load_server_plans_from_storage()
+    if isinstance(server_plans_data, list):
+        server_plans = server_plans_data
+        server_list_cache["data"] = server_plans
+        server_list_cache["timestamp"] = time.time() if server_plans else None
+        if server_plans:
+            print(f"已从存储加载 {len(server_plans)} 台服务器，并同步到缓存")
     
-    if os.path.exists(LOGS_FILE):
-        try:
-            with open(LOGS_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:  # 确保文件不是空的
-                    logs = json.loads(content)
-                    original_count = len(logs)
-                    # 限制日志数量为1000条（保留最新的）
-                    if len(logs) > 1000:
-                        logs = logs[-1000:]
-                        # 立即保存限制后的日志回文件
-                        try:
-                            with open(LOGS_FILE, 'w', encoding='utf-8') as f:
-                                json.dump(logs, f, ensure_ascii=False, indent=2)
-                            print(f"日志文件已限制为1000条（原{original_count}条）")
-                        except Exception as e:
-                            print(f"警告: 保存限制后的日志文件失败: {e}")
-                else:
-                    print(f"警告: {LOGS_FILE}文件为空，使用空列表")
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"警告: {LOGS_FILE}文件格式不正确或编码错误，使用空列表: {e}")
-    
-    if os.path.exists(QUEUE_FILE):
-        try:
-            with open(QUEUE_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:  # 确保文件不是空的
-                    queue = json.loads(content)
-                else:
-                    print(f"警告: {QUEUE_FILE}文件为空，使用空列表")
-        except json.JSONDecodeError:
-            print(f"警告: {QUEUE_FILE}文件格式不正确，使用空列表")
-    
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:  # 确保文件不是空的
-                    purchase_history = json.loads(content)
-                else:
-                    print(f"警告: {HISTORY_FILE}文件为空，使用空列表")
-        except json.JSONDecodeError:
-            print(f"警告: {HISTORY_FILE}文件格式不正确，使用空列表")
-    
-    if os.path.exists(SERVERS_FILE):
-        try:
-            with open(SERVERS_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:  # 确保文件不是空的
-                    server_plans = json.loads(content)
-                    # 将文件数据同步到缓存
-                    server_list_cache["data"] = server_plans
-                    server_list_cache["timestamp"] = time.time()
-                    print(f"已从文件加载 {len(server_plans)} 台服务器，并同步到缓存")
-                else:
-                    print(f"警告: {SERVERS_FILE}文件为空，使用空列表")
-        except json.JSONDecodeError:
-            print(f"警告: {SERVERS_FILE}文件格式不正确，使用空列表")
-    
-    # 加载各账户订阅数据；默认账户兼容旧 subscriptions.json
+    # 加载各账户订阅数据
     try:
         subscription_account_ids = list(accounts.keys()) if accounts else []
         if not subscription_account_ids:
             subscription_account_ids = [None]
-        legacy_subscriptions_data = None
-        if os.path.exists(SUBSCRIPTIONS_FILE):
-            try:
-                with open(SUBSCRIPTIONS_FILE, 'r', encoding='utf-8') as f:
-                    legacy_content = f.read().strip()
-                if legacy_content:
-                    legacy_subscriptions_data = json.loads(legacy_content)
-            except Exception:
-                legacy_subscriptions_data = None
         loaded_any_subscription = False
-        for idx, aid in enumerate(subscription_account_ids):
-            path = get_subscriptions_file(aid)
-            subscriptions_data = None
-            if not os.path.exists(path):
-                if aid is not None and idx == 0 and legacy_subscriptions_data:
-                    subscriptions_data = legacy_subscriptions_data
-                elif aid is None and legacy_subscriptions_data:
-                    subscriptions_data = legacy_subscriptions_data
-                else:
-                    continue
-            else:
-                with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if not content:
-                    print(f"警告: {path}文件为空")
-                    continue
-                subscriptions_data = json.loads(content)
+        for aid in subscription_account_ids:
+            subscriptions_data = load_monitor_subscription_bundle(aid)
+            if not isinstance(subscriptions_data, dict):
+                continue
             mon = get_monitor_for_account(aid)
             mon.subscriptions = []
             mon.known_servers = set()
@@ -451,33 +777,18 @@ def load_data():
                 mon.known_servers = set(subscriptions_data['known_servers'])
             mon.check_interval = subscriptions_data.get('check_interval', 20)
             loaded_any_subscription = True
-            source_name = os.path.basename(path) if os.path.exists(path) else os.path.basename(SUBSCRIPTIONS_FILE)
-            print(f"检查间隔设置为: {mon.check_interval}秒（来自{source_name}）")
+            print(f"检查间隔设置为: {mon.check_interval}秒（来自SQLite subscriptions）")
             print(f"已为账户 {aid or 'default'} 加载 {len(mon.subscriptions)} 个订阅")
-            if aid is not None and not os.path.exists(path) and subscriptions_data is legacy_subscriptions_data:
-                save_subscriptions(aid)
-                print(f"已将旧版全局订阅迁移写入: {os.path.basename(get_subscriptions_file(aid))}")
-        if not loaded_any_subscription and os.path.exists(SUBSCRIPTIONS_FILE):
-            print(f"警告: {SUBSCRIPTIONS_FILE}文件格式不正确或未加载到任何订阅")
+        if not loaded_any_subscription:
+            print("提示: SQLite 中当前没有任何订阅数据")
     except json.JSONDecodeError:
-        print(f"警告: 订阅文件格式不正确")
+        print("警告: 订阅迁移源数据格式不正确")
 
-    # 加载各账户队列分片
+    # 加载队列数据
     try:
-        for aid in accounts.keys():
-            path = os.path.join(DATA_DIR, f"queue_{aid}.json")
-            if not os.path.exists(path):
-                continue
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if not content:
-                    continue
-                acc_queue = json.loads(content)
-                if isinstance(acc_queue, list):
-                    queue.extend(acc_queue)
-        print(f"已加载分账号队列分片，共 {len(queue)} 项")
+        print(f"已从关系表加载队列，共 {len(queue)} 项")
     except Exception as e:
-        print(f"警告: 加载账户队列分片失败: {e}")
+        print(f"警告: 加载队列数据失败: {e}")
 
     # 队列去重（按 id）
     try:
@@ -519,22 +830,11 @@ def load_data():
     except Exception as e:
         print(f"规范化队列项字段失败: {e}")
 
-    # 加载各账户抢购历史分片
+    # 加载抢购历史数据
     try:
-        for aid in accounts.keys():
-            path = os.path.join(DATA_DIR, f"history_{aid}.json")
-            if not os.path.exists(path):
-                continue
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if not content:
-                    continue
-                acc_history = json.loads(content)
-                if isinstance(acc_history, list):
-                    purchase_history.extend(acc_history)
-        print(f"已加载分账号抢购历史分片，共 {len(purchase_history)} 项")
+        print(f"已从关系表加载抢购历史，共 {len(purchase_history)} 项")
     except Exception as e:
-        print(f"警告: 加载账户抢购历史分片失败: {e}")
+        print(f"警告: 加载抢购历史数据失败: {e}")
 
     # 抢购历史去重（按 id）
     try:
@@ -550,185 +850,90 @@ def load_data():
     except Exception as e:
         print(f"抢购历史去重失败: {e}")
     # 加载配置绑定狙击任务
-    if os.path.exists(CONFIG_SNIPER_FILE):
-        try:
-            with open(CONFIG_SNIPER_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    config_sniper_tasks.clear()
-                    config_sniper_tasks.extend(json.loads(content))
-                    print(f"已加载 {len(config_sniper_tasks)} 个配置绑定狙击任务")
-                else:
-                    print(f"警告: {CONFIG_SNIPER_FILE}文件为空")
-        except json.JSONDecodeError:
-            print(f"警告: {CONFIG_SNIPER_FILE}文件格式不正确")
+    config_sniper_data = load_config_sniper_tasks_from_storage()
+    if isinstance(config_sniper_data, list):
+        config_sniper_tasks.clear()
+        config_sniper_tasks.extend(config_sniper_data)
+        print(f"已加载 {len(config_sniper_tasks)} 个配置绑定狙击任务")
     
-    # 加载VPS订阅数据
-    if os.path.exists(VPS_SUBSCRIPTIONS_FILE):
-        try:
-            with open(VPS_SUBSCRIPTIONS_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    vps_subscriptions.clear()
-                    vps_subscriptions.extend(data.get('subscriptions', []))
-                    vps_check_interval = data.get('check_interval', 60)
-                    print(f"已加载 {len(vps_subscriptions)} 个VPS订阅")
-                else:
-                    print(f"警告: {VPS_SUBSCRIPTIONS_FILE}文件为空")
-        except json.JSONDecodeError:
-            print(f"警告: {VPS_SUBSCRIPTIONS_FILE}文件格式不正确")
+    vps_data = load_vps_subscriptions_from_storage()
+    if isinstance(vps_data, dict):
+        vps_subscriptions.clear()
+        vps_subscriptions.extend(vps_data.get('subscriptions', []))
+        vps_check_interval = vps_data.get('check_interval', 60)
+        print(f"已加载 {len(vps_subscriptions)} 个VPS订阅")
 
-    if os.path.exists(FEISHU_USERS_FILE):
-        try:
-            with open(FEISHU_USERS_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    feishu_users = data if isinstance(data, dict) else {}
-                else:
-                    print(f"警告: {FEISHU_USERS_FILE}文件为空")
-        except json.JSONDecodeError:
-            print(f"警告: {FEISHU_USERS_FILE}文件格式不正确")
+    data = load_feishu_users_from_storage()
+    if isinstance(data, dict):
+        feishu_users = data
 
-    if os.path.exists(BOT_USER_SELECTIONS_FILE):
-        try:
-            with open(BOT_USER_SELECTIONS_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    bot_user_account_selections = data if isinstance(data, dict) else {}
-                else:
-                    print(f"警告: {BOT_USER_SELECTIONS_FILE}文件为空")
-        except json.JSONDecodeError:
-            print(f"警告: {BOT_USER_SELECTIONS_FILE}文件格式不正确")
+    data = load_bot_account_selections_from_storage()
+    if isinstance(data, dict):
+        bot_user_account_selections = data
 
-    if os.path.exists(SERVER_ALIASES_FILE):
-        try:
-            with open(SERVER_ALIASES_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    server_aliases = data if isinstance(data, dict) else {}
-                else:
-                    print(f"警告: {SERVER_ALIASES_FILE}文件为空")
-        except json.JSONDecodeError:
-            print(f"警告: {SERVER_ALIASES_FILE}文件格式不正确")
+    data = load_server_aliases_from_storage()
+    if isinstance(data, dict):
+        server_aliases = data
 
-    if os.path.exists(BOT_PENDING_ACTIONS_FILE):
-        try:
-            with open(BOT_PENDING_ACTIONS_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    bot_pending_actions = data if isinstance(data, dict) else {}
-                else:
-                    print(f"警告: {BOT_PENDING_ACTIONS_FILE}文件为空")
-        except json.JSONDecodeError:
-            print(f"警告: {BOT_PENDING_ACTIONS_FILE}文件格式不正确")
+    data = load_bot_pending_actions_from_storage()
+    if isinstance(data, dict):
+        bot_pending_actions = data
 
-    if os.path.exists(SERVERS_SNAPSHOT_FILE):
-        try:
-            with open(SERVERS_SNAPSHOT_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    servers_snapshot = data if isinstance(data, dict) else {"updatedAt": None, "items": {}}
-        except json.JSONDecodeError:
-            print(f"警告: {SERVERS_SNAPSHOT_FILE}文件格式不正确")
+    data = load_snapshot_from_storage("servers")
+    if isinstance(data, dict):
+        servers_snapshot = data
 
-    if os.path.exists(AVAILABILITY_SNAPSHOT_FILE):
-        try:
-            with open(AVAILABILITY_SNAPSHOT_FILE, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    availability_snapshot = data if isinstance(data, dict) else {"updatedAt": None, "items": {}}
-        except json.JSONDecodeError:
-            print(f"警告: {AVAILABILITY_SNAPSHOT_FILE}文件格式不正确")
+    data = load_snapshot_from_storage("availability")
+    if isinstance(data, dict):
+        availability_snapshot = data
     
     # Update stats
     update_stats()
     
-    logging.info("Data loaded from files")
+    logging.info("Application state loaded from SQLite")
 
-# Save data to files
+# Persist application state
 def save_data(do_flush=True):
     global last_saved_ts
     try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+        persist_config_state()
+        save_accounts_to_relational_storage()
         if do_flush:
             flush_logs()
-        with open(QUEUE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(queue, f, ensure_ascii=False, indent=2)
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(purchase_history, f, ensure_ascii=False, indent=2)
-        with open(SERVERS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(server_plans, f, ensure_ascii=False, indent=2)
-        with open(FEISHU_USERS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(feishu_users, f, ensure_ascii=False, indent=2)
-        with open(BOT_USER_SELECTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(bot_user_account_selections, f, ensure_ascii=False, indent=2)
-        with open(SERVER_ALIASES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(server_aliases, f, ensure_ascii=False, indent=2)
-        with open(BOT_PENDING_ACTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(bot_pending_actions, f, ensure_ascii=False, indent=2)
-        with open(SERVERS_SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(servers_snapshot, f, ensure_ascii=False, indent=2)
-        with open(AVAILABILITY_SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(availability_snapshot, f, ensure_ascii=False, indent=2)
+        persist_queue_state()
+        persist_purchase_history_state()
+        persist_server_data_state()
+        persist_feishu_users_state()
+        persist_bot_account_selections_state()
+        persist_server_aliases_state()
+        persist_bot_pending_actions_state()
         try:
             acc_queue_map = {}
             for item in queue:
                 aid = item.get("accountId")
                 acc_queue_map.setdefault(aid, []).append(item)
-            acc_ids = set(accounts.keys())
-            acc_ids.update(acc_queue_map.keys())
-            for aid in acc_ids:
-                items = acc_queue_map.get(aid, [])
-                path = os.path.join(DATA_DIR, f"queue_{aid}.json")
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(items, f, ensure_ascii=False, indent=2)
             acc_hist_map = {}
             for h in purchase_history:
                 aid = h.get("accountId")
                 acc_hist_map.setdefault(aid, []).append(h)
-            acc_ids_h = set(accounts.keys())
-            acc_ids_h.update(acc_hist_map.keys())
-            for aid in acc_ids_h:
-                items = acc_hist_map.get(aid, [])
-                path = os.path.join(DATA_DIR, f"history_{aid}.json")
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(items, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logging.error(f"分账号保存队列和历史失败: {str(e)}")
+            logging.error(f"按账户整理队列和历史数据失败: {str(e)}")
         last_saved_ts = time.time()
-        logging.info("Data saved to files")
+        logging.info("Application state persisted to SQLite")
     except Exception as e:
         logging.error(f"保存数据时出错: {str(e)}")
         print(f"保存数据时出错: {str(e)}")
-        # 尝试单独保存每个文件
-        try_save_file(CONFIG_FILE, config)
-        try_save_file(LOGS_FILE, logs)
-        try_save_file(QUEUE_FILE, queue)
-        try_save_file(HISTORY_FILE, purchase_history)
-        try_save_file(SERVERS_FILE, server_plans)
-
-# 尝试保存单个文件
-def try_save_file(filename, data):
-    try:
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"成功保存 {filename}")
-    except Exception as e:
-        print(f"保存 {filename} 时出错: {str(e)}")
+        # 退化为尽量持久化到当前SQLite结构化存储
+        persist_config_state()
+        flush_logs()
+        persist_queue_state()
+        persist_purchase_history_state()
+        persist_server_data_state()
 
 # 保存配置绑定狙击任务
 def save_config_sniper_tasks():
     try:
-        with open(CONFIG_SNIPER_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config_sniper_tasks, f, indent=2, ensure_ascii=False)
+        persist_config_sniper_tasks_state()
         logging.info(f"已保存 {len(config_sniper_tasks)} 个配置绑定狙击任务")
     except Exception as e:
         logging.error(f"保存配置狙击任务时出错: {str(e)}")
@@ -736,12 +941,7 @@ def save_config_sniper_tasks():
 # 保存VPS订阅数据
 def save_vps_subscriptions():
     try:
-        data = {
-            'subscriptions': vps_subscriptions,
-            'check_interval': vps_check_interval
-        }
-        with open(VPS_SUBSCRIPTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        persist_vps_subscriptions_state()
         logging.info(f"已保存 {len(vps_subscriptions)} 个VPS订阅")
     except Exception as e:
         logging.error(f"保存VPS订阅时出错: {str(e)}")
@@ -758,15 +958,14 @@ def save_accounts():
         payload = {
             "accounts": sanitized_list
         }
-        with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        save_accounts_to_relational_storage()
         add_log("INFO", "账户配置已保存", "accounts")
     except Exception as e:
         add_log("ERROR", f"保存账户配置失败: {str(e)}", "accounts")
 
 # 日志缓冲区：批量写入以提高性能
 log_write_counter = 0
-LOG_WRITE_THRESHOLD = 10  # 每10条日志写一次文件
+LOG_WRITE_THRESHOLD = 10  # 每10条日志重置一次批量计数
 last_saved_ts = 0
 
 # Add a log entry
@@ -780,6 +979,10 @@ def add_log(level, message, source="system"):
         "source": source
     }
     logs.append(log_entry)
+    try:
+        append_log_to_storage(log_entry)
+    except Exception as e:
+        logging.error(f"写入日志表失败: {str(e)}")
     
     # Keep logs at a reasonable size (last 1000 entries)
     if len(logs) > 1000:
@@ -791,16 +994,9 @@ def add_log(level, message, source="system"):
     
     if should_write:
         try:
-            # 确保写入文件时日志数量不超过1000条
-            logs_to_write = logs[-1000:] if len(logs) > 1000 else logs
-            with open(LOGS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(logs_to_write, f, ensure_ascii=False, indent=2)
-            # 如果日志被截断，更新内存中的logs
-            if len(logs) > 1000:
-                logs = logs_to_write
             log_write_counter = 0
         except Exception as e:
-            logging.error(f"写入日志文件失败: {str(e)}")
+            logging.error(f"写入日志存储失败: {str(e)}")
     
     # Also print to console
     if level == "ERROR":
@@ -810,25 +1006,24 @@ def add_log(level, message, source="system"):
     else:
         logging.info(f"[{source}] {message}")
 
-# 强制写入所有日志到文件
+# 强制将内存日志同步到日志表
 def flush_logs():
     global logs, log_write_counter
     try:
         # 确保日志数量不超过1000条
         if len(logs) > 1000:
             logs = logs[-1000:]
-        with open(LOGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(logs, f, ensure_ascii=False, indent=2)
+        storage.replace_logs(logs, limit=1000)
         log_write_counter = 0
-        logging.info("日志已强制刷新到文件")
+        logging.info("日志已强制刷新到SQLite")
     except Exception as e:
-        logging.error(f"强制写入日志文件失败: {str(e)}")
+        logging.error(f"强制写入日志存储失败: {str(e)}")
 
 # Update statistics
 def update_stats():
     global stats, monitor, monitors
     # 活跃队列 = 所有未完成的队列项（running + pending），不包括已完成或失败的
-    active_count = sum(1 for item in queue if item["status"] in ["running", "pending", "paused"])
+    active_count = count_active_queue_items()
     available_count = 0
     
     # Count available servers
@@ -838,8 +1033,8 @@ def update_stats():
                 available_count += 1
                 break
     
-    success_count = sum(1 for item in purchase_history if item["status"] == "success")
-    failed_count = sum(1 for item in purchase_history if item["status"] == "failed")
+    success_count = count_purchase_history_status("success")
+    failed_count = count_purchase_history_status("failed")
     
     # 检查监控器运行状态
     monitor_running = False
@@ -920,8 +1115,7 @@ def bind_feishu_user(open_id, user_name="", account_id=None):
         "user_name": user_name or ""
     }
     try:
-        with open(FEISHU_USERS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(feishu_users, f, ensure_ascii=False, indent=2)
+        persist_feishu_users_state()
     except Exception as e:
         add_log("WARNING", f"保存飞书用户绑定失败: {str(e)}", "feishu")
     add_log("INFO", f"已绑定飞书用户: account={aid}, open_id={open_id}", "feishu")
@@ -1052,24 +1246,21 @@ def normalize_feishu_card_action_payload(payload):
 
 def save_bot_user_account_selections():
     try:
-        with open(BOT_USER_SELECTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(bot_user_account_selections, f, ensure_ascii=False, indent=2)
+        persist_bot_account_selections_state()
     except Exception as e:
         add_log("WARNING", f"保存机器人账户切换状态失败: {str(e)}", "bot")
 
 
 def save_server_aliases():
     try:
-        with open(SERVER_ALIASES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(server_aliases, f, ensure_ascii=False, indent=2)
+        persist_server_aliases_state()
     except Exception as e:
         add_log("WARNING", f"保存服务器别名失败: {str(e)}", "bot")
 
 
 def save_bot_pending_actions():
     try:
-        with open(BOT_PENDING_ACTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(bot_pending_actions, f, ensure_ascii=False, indent=2)
+        persist_bot_pending_actions_state()
     except Exception as e:
         add_log("WARNING", f"保存机器人待处理动作失败: {str(e)}", "bot")
 
@@ -1893,8 +2084,8 @@ def create_queue_from_new_server(channel: str, user_key: str, ctx):
         'fromFeishu': channel == 'feishu',
         'fromTelegram': channel == 'telegram'
     }
-    queue.append(queue_item)
-    save_data()
+    append_queue_item(queue_item)
+    persist_queue_state()
     update_stats()
     return (
         f"已将新增服务器加入抢购队列：{ctx.get('serverName')}\n"
@@ -1913,8 +2104,7 @@ def save_servers_snapshot_data(items):
         'items': items
     }
     try:
-        with open(SERVERS_SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(servers_snapshot, f, ensure_ascii=False, indent=2)
+        save_snapshot_to_storage("servers", servers_snapshot)
     except Exception as e:
         add_log('WARNING', f"保存服务器列表快照失败: {str(e)}", 'auto_refresh')
 
@@ -1926,8 +2116,7 @@ def save_availability_snapshot_data(items):
         'items': items
     }
     try:
-        with open(AVAILABILITY_SNAPSHOT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(availability_snapshot, f, ensure_ascii=False, indent=2)
+        save_snapshot_to_storage("availability", availability_snapshot)
     except Exception as e:
         add_log('WARNING', f"保存实时可用性快照失败: {str(e)}", 'auto_refresh')
 
@@ -2027,12 +2216,13 @@ def run_servers_auto_refresh_once():
     server_plans = primary_servers
     server_list_cache['data'] = primary_servers
     server_list_cache['timestamp'] = time.time()
+    save_server_plans_to_storage(server_plans)
     current_items = merged_snapshot_items
     previous_items = (servers_snapshot or {}).get('items') or {}
     is_initial_snapshot = len(previous_items) == 0
     new_items = diff_new_items(previous_items, current_items)
     save_servers_snapshot_data(current_items)
-    save_data()
+    persist_server_data_state()
     if config.get('serversNewServerNotifyEnabled') and (not is_initial_snapshot):
         for item in new_items:
             message_uuid = str(uuid.uuid4())
@@ -2705,10 +2895,10 @@ def execute_purchase_command(plan_code: str, datacenter=None, quantity=1, source
             "fromTelegram": source == "telegram",
             "fromFeishu": source == "feishu"
         }
-        queue.append(queue_item)
+        append_queue_item(queue_item)
         added_count += 1
 
-    save_data()
+    persist_queue_state()
     update_stats()
     success_msg = f"✅ 已添加 {added_count} 个任务到抢购队列\n\n型号: {plan_code}\n"
     success_msg += f"机房: {(datacenter or '所有可用机房').upper() if datacenter else '所有可用机房'}\n"
@@ -3140,7 +3330,7 @@ def purchase_server(queue_item):
             entry["sequence"] = sequence_idx if sequence_idx is not None else int(queue_item.get("purchased", 0)) + 1
         if price_info:
             entry["price"] = price_info
-        purchase_history.append(entry)
+        append_purchase_history_entry(entry)
 
     try:
         target_dcs = queue_item.get("datacenters")  # 用户设置的机房优先级序列（靠前优先）
@@ -3293,7 +3483,7 @@ def purchase_server(queue_item):
             order_url_val = checkout_result.get("url", "")
             _append_history(queue_item, "success", selected_display_dc or (queue_item.get("datacenters") or [None])[0], order_id_val, order_url_val, None, price_info)
             add_log("INFO", f"创建抢购历史(成功) 任务ID: {queue_item['id']}", "purchase")
-            save_data()
+            persist_purchase_history_state()
             update_stats()
             add_log("INFO", f"成功购买 {queue_item['planCode']} 在 {selected_display_dc or first_dc} (订单ID: {order_id_val}, URL: {order_url_val})", "purchase")
             if config.get("tgToken") and config.get("tgChatId"):
@@ -3423,8 +3613,8 @@ def purchase_server(queue_item):
                 if fut.result():
                     successes += 1
 
-        # 汇总保存与统计更新（避免线程内频繁IO）
-        save_data()
+        # 汇总保存与统计更新（避免线程内频繁全量IO）
+        persist_purchase_history_state()
         update_stats()
         add_log("INFO", f"并发下单完成，总成功 {successes}/{remaining_to_buy}", "purchase")
         if successes == 0:
@@ -3441,7 +3631,7 @@ def purchase_server(queue_item):
         queue_item["failureCount"] = int(queue_item.get("failureCount", 0)) + 1
         _append_history(queue_item, "failed", (queue_item.get("datacenters") or [None])[0], None, None, error_msg, None)
         add_log("INFO", f"创建抢购历史(API失败) 任务ID: {queue_item['id']}", "purchase")
-        save_data()
+        persist_purchase_history_state()
         update_stats()
         return False
 
@@ -3456,13 +3646,13 @@ def purchase_server(queue_item):
         queue_item["failureCount"] = int(queue_item.get("failureCount", 0)) + 1
         _append_history(queue_item, "failed", (queue_item.get("datacenters") or [None])[0], None, None, error_msg, None)
         add_log("INFO", f"创建抢购历史(通用失败) 任务ID: {queue_item['id']}", "purchase")
-        save_data()
+        persist_purchase_history_state()
         update_stats()
         return False
 
 # Process queue items
 def process_queue():
-    global deleted_task_ids
+    global deleted_task_ids, last_saved_ts
     changes_since_last_save = False
     def get_account_sem(account_id):
         if account_id not in account_checkout_semaphores:
@@ -3478,65 +3668,53 @@ def process_queue():
     def execute_queue_item(item_id):
         nonlocal changes_since_last_save
         try:
-            with queue_lock:
-                item = next((x for x in queue if x["id"] == item_id), None)
+            item = get_queue_item_from_storage(item_id)
             if not item or item_id in deleted_task_ids:
                 return
             if item.get("status") != "running":
                 return
             if int(item.get("purchased", 0)) >= int(item.get("quantity", 1)):
-                with queue_lock:
-                    item["status"] = "completed"
-                    item["updatedAt"] = datetime.now().isoformat()
-                    changes_since_last_save = True
+                item["status"] = "completed"
+                item["updatedAt"] = datetime.now().isoformat()
+                upsert_queue_item_record(item)
+                sync_queue_item_to_memory(item)
+                changes_since_last_save = True
                 return
             acc_id = item.get("accountId")
             sem = get_account_sem(acc_id)
-            with queue_lock:
-                item["lastCheckTime"] = time.time()
-                item["retryCount"] = int(item.get("retryCount", 0)) + 1
-                target_dcs_text = item.get('datacenter') or ','.join(item.get('datacenters') or [])
-                add_log("INFO", f"尝试任务 {item['id']}: {item['planCode']} 在 {target_dcs_text}", "queue")
+            item["lastCheckTime"] = time.time()
+            item["retryCount"] = int(item.get("retryCount", 0)) + 1
+            upsert_queue_item_record(item)
+            sync_queue_item_to_memory(item)
+            target_dcs_text = item.get('datacenter') or ','.join(item.get('datacenters') or [])
+            add_log("INFO", f"尝试任务 {item['id']}: {item['planCode']} 在 {target_dcs_text}", "queue")
             with sem:
                 successes = purchase_server(item)  # 支持并发购买，返回成功数量
-            with queue_lock:
-                if successes:
-                    item["purchased"] = int(item.get("purchased", 0)) + int(successes)
-                    item["failureCount"] = 0
-                    if int(item.get("purchased", 0)) >= int(item.get("quantity", 1)):
-                        item["status"] = "completed"
-                    else:
-                        item["nextAttemptAt"] = compute_next_attempt(item)
+            latest_item = get_queue_item_from_storage(item_id) or item
+            if successes:
+                latest_item["purchased"] = int(latest_item.get("purchased", 0)) + int(successes)
+                latest_item["failureCount"] = 0
+                if int(latest_item.get("purchased", 0)) >= int(latest_item.get("quantity", 1)):
+                    latest_item["status"] = "completed"
                 else:
-                    if int(item.get("failureCount", 0)) >= int(item.get("maxRetryCount", 50)):
-                        item["status"] = "paused"
-                        item["nextAttemptAt"] = 0
-                    else:
-                        item["nextAttemptAt"] = compute_next_attempt(item)
-                item["updatedAt"] = datetime.now().isoformat()
-                changes_since_last_save = True
+                    latest_item["nextAttemptAt"] = compute_next_attempt(latest_item)
+            else:
+                if int(latest_item.get("failureCount", 0)) >= int(latest_item.get("maxRetryCount", 50)):
+                    latest_item["status"] = "paused"
+                    latest_item["nextAttemptAt"] = 0
+                else:
+                    latest_item["nextAttemptAt"] = compute_next_attempt(latest_item)
+            latest_item["updatedAt"] = datetime.now().isoformat()
+            upsert_queue_item_record(latest_item)
+            sync_queue_item_to_memory(latest_item)
+            changes_since_last_save = True
         finally:
             with queue_lock:
                 processing_item_ids.discard(item_id)
 
     while True:
         now = time.time()
-        with queue_lock:
-            items = list(queue)
-        runnable = []
-        for it in items:
-            if it.get("status") != "running":
-                continue
-            if int(it.get("purchased", 0)) >= int(it.get("quantity", 1)):
-                continue
-            nxt = float(it.get("nextAttemptAt") or 0)
-            if nxt == 0 or now >= nxt:
-                if it["id"] not in processing_item_ids and it["id"] not in deleted_task_ids:
-                    runnable.append(it)
-        runnable.sort(key=lambda it: (
-            0 if it.get("quickOrder") else 1,
-            -int(datetime.fromisoformat(it.get("createdAt")).timestamp()) if it.get("createdAt") else 0
-        ))
+        runnable = list_runnable_queue_items_from_storage(now)
         capacity = max(0, 3 - len(processing_item_ids))
         for it in runnable[:capacity]:
             with queue_lock:
@@ -3544,7 +3722,8 @@ def process_queue():
             executor.submit(execute_queue_item, it["id"])
 
         if now - last_saved_ts >= 5.0 and changes_since_last_save:
-            save_data(False)
+            persist_runtime_state(include_logs=False)
+            last_saved_ts = time.time()
             update_stats()
             changes_since_last_save = False
         time.sleep(1)
@@ -3590,7 +3769,8 @@ def auto_refresh_cache_loop():
                         server_plans = api_servers
                         server_list_cache["data"] = api_servers
                         server_list_cache["timestamp"] = time.time()
-                        save_data()
+                        save_server_plans_to_storage(server_plans)
+                        persist_server_data_state()
                         update_stats()
                         alias = (accounts.get(aid, {}) or {}).get('alias') if aid else 'global'
                         add_log("INFO", f"自动刷新完成：账户 {aid or 'global'} ({alias}) 更新 {len(server_plans)} 台服务器", "auto_refresh")
@@ -4714,15 +4894,14 @@ def get_monitor_for_account(account_id=None):
 def save_subscriptions(account_id=None):
     try:
         mon = get_monitor_for_account(account_id)
-        subscriptions_data = {
-            "subscriptions": mon.subscriptions,
-            "known_servers": list(mon.known_servers),
-            "check_interval": mon.check_interval or 20
-        }
+        storage.replace_monitor_subscriptions(
+            account_id,
+            mon.subscriptions,
+            mon.known_servers,
+            mon.check_interval or 20,
+        )
         path = get_subscriptions_file(account_id)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(subscriptions_data, f, ensure_ascii=False, indent=2)
-        add_log("INFO", f"订阅数据已保存: {os.path.basename(path)}", "monitor")
+        add_log("INFO", f"订阅数据已保存到SQLite: {os.path.basename(path)}", "monitor")
     except Exception as e:
         add_log("ERROR", f"保存订阅数据失败: {str(e)}", "monitor")
 
@@ -4850,9 +5029,10 @@ def force_flush_logs():
 
 @app.route('/api/logs', methods=['DELETE'])
 def clear_logs():
-    global logs
+    global logs, log_write_counter
     logs = []
-    flush_logs()  # 立即写入空日志
+    clear_logs_in_storage()
+    log_write_counter = 0
     add_log("INFO", "Logs cleared")
     return jsonify({"status": "success"})
 
@@ -4860,17 +5040,8 @@ def clear_logs():
 def get_queue():
     scope = (request.args.get('scope') or '').lower()
     account_id = get_account_id_from_request()
-    items_src = queue
-    if scope != 'all' and account_id:
-        items_src = [item for item in items_src if item.get("accountId") == account_id]
-    seen = set()
-    dedup = []
-    for it in items_src:
-        iid = it.get("id")
-        if iid and iid not in seen:
-            seen.add(iid)
-            dedup.append(it)
-    return jsonify(dedup)
+    items, _ = list_queue_from_storage(scope='all' if scope == 'all' else 'current', account_id=account_id, status='all')
+    return jsonify(items)
 
 @app.route('/api/queue/paged', methods=['GET'])
 def get_queue_paged():
@@ -4890,41 +5061,17 @@ def get_queue_paged():
 
         scope = (request.args.get('scope') or '').lower()
         account_id = get_account_id_from_request()
-        items_src = queue
-        if scope != 'all' and account_id:
-            items_src = [item for item in items_src if item.get('accountId') == account_id]
-
-        # 去重
-        seen = set()
-        items = []
-        for it in items_src:
-            iid = it.get('id')
-            if iid and iid not in seen:
-                seen.add(iid)
-                items.append(it)
-
-        # 状态过滤
-        if status != 'all':
-            items = [it for it in items if str(it.get('status', '')).lower() == status]
-
-        # 排序：先按 updatedAt 降序，再按 createdAt 降序
-        def _ts(s):
-            try:
-                return datetime.fromisoformat(s).timestamp()
-            except Exception:
-                return 0
-        items.sort(key=lambda it: (
-            -_ts(it.get('updatedAt', '')), -_ts(it.get('createdAt', ''))
-        ))
-
-        total = len(items)
+        items, total = list_queue_from_storage(
+            scope='all' if scope == 'all' else 'current',
+            account_id=account_id,
+            status=status,
+            page=page,
+            page_size=page_size,
+        )
         total_pages = (total + page_size - 1) // page_size
-        start = (page - 1) * page_size
-        end = start + page_size
-        paged_items = items[start:end]
 
         return jsonify({
-            'items': paged_items,
+            'items': items,
             'page': page,
             'pageSize': page_size,
             'total': total,
@@ -4936,14 +5083,8 @@ def get_queue_paged():
 
 @app.route('/api/queue/all', methods=['GET'])
 def get_queue_all():
-    seen = set()
-    dedup = []
-    for it in queue:
-        iid = it.get("id")
-        if iid and iid not in seen:
-            seen.add(iid)
-            dedup.append(it)
-    return jsonify(dedup)
+    items, _ = list_queue_from_storage(scope='all', account_id=None, status='all')
+    return jsonify(items)
 
 @app.route('/api/queue', methods=['POST'])
 def add_queue_item():
@@ -4977,9 +5118,8 @@ def add_queue_item():
         "lastCheckTime": 0, # 初始化为0, process_queue的首次检查会处理
         "accountId": data.get("accountId") or account_id
     }
-    
-    queue.append(queue_item)
-    save_data()
+    append_queue_item(queue_item)
+    persist_queue_state()
     update_stats()
     
     add_log("INFO", f"添加任务 {queue_item['id']} ({queue_item['planCode']} 在 {','.join(queue_item.get('datacenters') or [])}) 到队列并立即启动 (状态: running)")
@@ -4996,7 +5136,8 @@ def remove_queue_item(id):
         
         # 从队列中移除
         queue = [item for item in queue if item["id"] != id]
-        save_data()
+        delete_queue_item_record(id)
+        persist_queue_state()
         update_stats()
         add_log("INFO", f"Removed {item['planCode']} from queue (ID: {id})", "system")
     
@@ -5012,15 +5153,8 @@ def clear_all_queue():
         for item in to_delete:
             deleted_task_ids.add(item["id"])
         count = len(to_delete)
-        queue = [item for item in queue if item.get("accountId") != account_id]
-        save_data()
-        try:
-            path = os.path.join(DATA_DIR, f"queue_{account_id}.json")
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False, indent=2)
-            add_log("INFO", f"强制清空队列文件: {path}")
-        except Exception as e:
-            add_log("ERROR", f"清空队列分片文件时出错: {str(e)}")
+        clear_queue_for_account(account_id)
+        persist_queue_state()
         update_stats()
         add_log("INFO", f"Cleared account queue items ({count} items removed)")
         return jsonify({"status": "success", "count": count, "accountCount": 1})
@@ -5031,14 +5165,8 @@ def clear_all_queue():
         for item in queue:
             deleted_task_ids.add(item["id"])
         add_log("INFO", f"标记 {count} 个任务为删除，后台线程将立即停止处理")
-        queue.clear()
-        save_data()
-        try:
-            with open(QUEUE_FILE, 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False, indent=2)
-            add_log("INFO", f"强制清空队列文件: {QUEUE_FILE}")
-        except Exception as e:
-            add_log("ERROR", f"清空队列文件时出错: {str(e)}")
+        clear_all_queue_records()
+        persist_queue_state()
         update_stats()
         add_log("INFO", f"Cleared all queue items ({count} items removed)")
         return jsonify({"status": "success", "count": count, "accountCount": account_count})
@@ -5051,7 +5179,8 @@ def update_queue_status(id):
     if item:
         item["status"] = data.get("status", "pending")
         item["updatedAt"] = datetime.now().isoformat()
-        save_data()
+        upsert_queue_item_record(item)
+        persist_queue_state()
         update_stats()
         
         add_log("INFO", f"Updated {item['planCode']} status to {item['status']}")
@@ -5070,7 +5199,8 @@ def restart_queue_item(id):
     item["nextAttemptAt"] = 0
     item["status"] = "running"
     item["updatedAt"] = datetime.now().isoformat()
-    save_data()
+    upsert_queue_item_record(item)
+    persist_queue_state()
     update_stats()
     return jsonify({"status": "success"})
 
@@ -5108,7 +5238,8 @@ def update_queue_item(id):
     if int(item.get("purchased", 0)) >= int(item.get("quantity", 1)):
         item["status"] = "completed"
 
-    save_data()
+    upsert_queue_item_record(item)
+    persist_queue_state()
     update_stats()
     add_log("INFO", f"Updated queue item {id} configuration: {item['planCode']} @ {','.join(item.get('datacenters') or [])}")
     return jsonify({"status": "success"})
@@ -5117,44 +5248,18 @@ def update_queue_item(id):
 def get_purchase_history():
     scope = (request.args.get('scope') or '').lower()
     account_id = get_account_id_from_request()
-    if scope == 'all':
-        return jsonify(purchase_history)
-    if account_id:
-        items = [h for h in purchase_history if h.get("accountId") == account_id]
-        return jsonify(items)
-    return jsonify(purchase_history)
+    items = list_purchase_history_from_storage(scope='all' if scope == 'all' else 'current', account_id=account_id)
+    return jsonify(items)
 
 @app.route('/api/purchase-history', methods=['DELETE'])
 def clear_purchase_history():
     global purchase_history
     account_id = get_account_id_from_request()
     if account_id:
-        purchase_history = [h for h in purchase_history if h.get("accountId") != account_id]
-        try:
-            path = os.path.join(DATA_DIR, f"history_{account_id}.json")
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False, indent=2)
-            add_log("INFO", f"强制清空抢购历史文件: {path}")
-        except Exception as e:
-            add_log("ERROR", f"清空抢购历史分片文件时出错: {str(e)}")
+        clear_purchase_history_for_account(account_id)
     else:
-        purchase_history = []
-        try:
-            with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False, indent=2)
-            for aid in accounts.keys():
-                path = os.path.join(DATA_DIR, f"history_{aid}.json")
-                if os.path.exists(path):
-                    with open(path, 'w', encoding='utf-8') as f:
-                        json.dump([], f, ensure_ascii=False, indent=2)
-            path_default = os.path.join(DATA_DIR, "history_default.json")
-            if os.path.exists(path_default):
-                with open(path_default, 'w', encoding='utf-8') as f:
-                    json.dump([], f, ensure_ascii=False, indent=2)
-            add_log("INFO", "强制清空所有抢购历史分片文件")
-        except Exception as e:
-            add_log("ERROR", f"清空全部抢购历史文件时出错: {str(e)}")
-    save_data()
+        clear_all_purchase_history_records()
+    persist_purchase_history_state()
     update_stats()
     add_log("INFO", "Purchase history cleared")
     return jsonify({"status": "success"})
@@ -5585,8 +5690,8 @@ def telegram_webhook():
                                 "accountId": (acc_list[0] if acc_list else get_account_id_from_request())
                             }
                             
-                            queue.append(queue_item)
-                            save_data()
+                            append_queue_item(queue_item)
+                            persist_queue_state()
                             update_stats()
                             
                             options_str = ", ".join(options) if options else "无（默认配置）"
@@ -5669,8 +5774,8 @@ def telegram_webhook():
                     "accountId": get_account_id_from_request()
                 }
                 
-                queue.append(queue_item)
-                save_data()
+                append_queue_item(queue_item)
+                persist_queue_state()
                 update_stats()
                 
                 options_str = ", ".join(options) if options else "无（默认配置）"
@@ -6040,8 +6145,8 @@ def telegram_webhook():
                     "quantity": max(1, min(q, 100)),
                     "auto_pay": auto_pay
                 }
-                queue.append(queue_item)
-                save_data()
+                append_queue_item(queue_item)
+                persist_queue_state()
                 update_stats()
                 tg_token = config.get("tgToken")
                 if tg_token:
@@ -6274,8 +6379,8 @@ def feishu_card_action():
             "fromFeishu": True,
             "accountId": chosen_account
         }
-        queue.append(queue_item)
-        save_data()
+        append_queue_item(queue_item)
+        persist_queue_state()
         update_stats()
         return jsonify({"toast": {"type": "success", "content": "已添加到抢购队列"}})
 
@@ -6491,8 +6596,8 @@ def feishu_card_action():
             "quantity": max(1, min(quantity, 100)),
             "auto_pay": auto_pay
         }
-        queue.append(queue_item)
-        save_data()
+        append_queue_item(queue_item)
+        persist_queue_state()
         update_stats()
         return jsonify({"toast": {"type": "success", "content": "已添加到抢购队列"}})
 
@@ -6519,8 +6624,7 @@ def clear_feishu_binding():
     if existed:
         feishu_users.pop(account_id, None)
         try:
-            with open(FEISHU_USERS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(feishu_users, f, ensure_ascii=False, indent=2)
+            persist_feishu_users_state()
         except Exception as e:
             add_log("WARNING", f"清除飞书绑定后保存失败: {str(e)}", "feishu")
         add_log("INFO", f"已清除飞书绑定: account={account_id}", "feishu")
@@ -6606,7 +6710,8 @@ def get_servers():
             server_plans = api_servers
             server_list_cache["data"] = api_servers
             server_list_cache["timestamp"] = time.time()
-            save_data()
+            save_server_plans_to_storage(server_plans)
+            persist_server_data_state()
             update_stats()
             add_log("INFO", f"从OVH API加载了 {len(server_plans)} 台服务器，已更新全局缓存")
             
@@ -7131,7 +7236,7 @@ def get_stats_per_account():
         for aid in all_accounts:
             acc_key = aid or 'default'
             # 队列
-            active_count = sum(1 for item in queue if item.get("accountId") == aid and item.get("status") in ["running", "pending", "paused"])
+            active_count = count_active_queue_items(aid)
             total_servers = len(server_plans)
             # 可用性统计（近似）：根据列表中的datacenters可用项统计
             available_count = 0
@@ -7142,8 +7247,8 @@ def get_stats_per_account():
                         available_count += 1
                         break
             # 购买历史
-            success_count = sum(1 for h in purchase_history if h.get("accountId") == aid and h.get("status") == "success")
-            failed_count = sum(1 for h in purchase_history if h.get("accountId") == aid and h.get("status") == "failed")
+            success_count = count_purchase_history_status("success", aid)
+            failed_count = count_purchase_history_status("failed", aid)
             # 监控状态
             mon = monitors.get(aid)
             monitor_running = bool(mon and mon.running)
@@ -7198,15 +7303,17 @@ def get_cache_info():
             "cacheValid": False
         },
         "storage": {
+            "primary": "sqlite",
+            "database": SQLITE_DB_FILE,
             "dataDir": DATA_DIR,
             "cacheDir": CACHE_DIR,
             "logsDir": LOGS_DIR,
-            "files": {
-                "config": os.path.exists(CONFIG_FILE),
-                "servers": os.path.exists(SERVERS_FILE),
-                "logs": os.path.exists(LOGS_FILE),
-                "queue": os.path.exists(QUEUE_FILE),
-                "history": os.path.exists(HISTORY_FILE)
+            "legacyMigrationSources": {
+                "configJson": os.path.exists(LEGACY_CONFIG_JSON_PATH),
+                "serversJson": os.path.exists(LEGACY_SERVERS_JSON_PATH),
+                "logsJson": os.path.exists(LEGACY_LOGS_JSON_PATH),
+                "queueJson": os.path.exists(LEGACY_QUEUE_JSON_PATH),
+                "historyJson": os.path.exists(LEGACY_HISTORY_JSON_PATH)
             }
         }
     }
@@ -7240,11 +7347,13 @@ def clear_cache():
         add_log("INFO", "已清除内存缓存")
     
     if cache_type in ['all', 'files']:
-        # 清除缓存文件
+        # 清除持久化缓存与调试缓存
         try:
-            if os.path.exists(SERVERS_FILE):
-                os.remove(SERVERS_FILE)
-                cleared.append('servers_file')
+            if os.path.exists(LEGACY_SERVERS_JSON_PATH):
+                save_server_plans_to_storage([])
+                cleared.append('servers_sqlite')
+            save_snapshot_to_storage('servers', {"updatedAt": None, "items": {}})
+            save_snapshot_to_storage('availability', {"updatedAt": None, "items": {}})
             
             # 清除API调试缓存
             cache_files = ['ovh_catalog_raw.json']
@@ -7260,9 +7369,9 @@ def clear_cache():
                 shutil.rmtree(servers_cache_dir)
                 cleared.append('servers_cache_dir')
             
-            add_log("INFO", f"已清除缓存文件: {', '.join(cleared)}")
+            add_log("INFO", f"已清除缓存数据: {', '.join(cleared)}")
         except Exception as e:
-            add_log("ERROR", f"清除缓存文件时出错: {str(e)}")
+            add_log("ERROR", f"清除缓存数据时出错: {str(e)}")
             return jsonify({"status": "error", "message": str(e)}), 500
     
     return jsonify({
@@ -7271,37 +7380,17 @@ def clear_cache():
         "message": f"已清除缓存: {', '.join(cleared)}"
     })
 
-# 确保所有必要的文件都存在
+# 确保必要的持久化默认值已初始化
 def ensure_files_exist():
-    # 检查并创建日志文件
-    if not os.path.exists(LOGS_FILE):
-        with open(LOGS_FILE, 'w', encoding='utf-8') as f:
-            f.write('[]')
-        print(f"已创建空的 {LOGS_FILE} 文件")
-    
-    # 检查并创建队列文件
-    if not os.path.exists(QUEUE_FILE):
-        with open(QUEUE_FILE, 'w', encoding='utf-8') as f:
-            f.write('[]')
-        print(f"已创建空的 {QUEUE_FILE} 文件")
-    
-    # 检查并创建历史记录文件
-    if not os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            f.write('[]')
-        print(f"已创建空的 {HISTORY_FILE} 文件")
-    
-    # 检查并创建服务器信息文件
-    if not os.path.exists(SERVERS_FILE):
-        with open(SERVERS_FILE, 'w', encoding='utf-8') as f:
-            f.write('[]')
-        print(f"已创建空的 {SERVERS_FILE} 文件")
-    
-    # 检查并创建配置文件
-    if not os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        print(f"已创建默认 {CONFIG_FILE} 文件")
+    defaults = {
+        LEGACY_CONFIG_JSON_PATH: config,
+    }
+    for path, default_value in defaults.items():
+        if path == LEGACY_CONFIG_JSON_PATH and load_config_from_storage() is None and not os.path.exists(path):
+            read_value = default_value
+            if isinstance(read_value, dict):
+                storage.save_config("main", read_value)
+            print(f"已初始化持久化配置: {path}")
 
 # ==================== 配置绑定狙击系统 ====================
 
@@ -7740,8 +7829,8 @@ def check_and_queue_plancode(api2_plancode, task, bound_config, client):
                     "configSniperTaskId": task['id']
                 }
                 
-                queue.append(queue_item)
-                save_data()
+                append_queue_item(queue_item)
+                persist_queue_state()
                 update_stats()
                 queued_count += 1
                 
@@ -8175,7 +8264,7 @@ def quick_order():
         
         # 将快速下单任务插入队列头部，提高优先级
         queue.insert(0, queue_item)
-        save_data()
+        persist_queue_state()
         update_stats()
         
         add_log("INFO", f"快速下单: {plancode} ({datacenter}) 已加入队列（含税价格: {with_tax}，options: {options}）", "config_sniper")
@@ -12249,14 +12338,16 @@ def accounts_api():
     if request.method == 'GET':
         # 返回时剔除与通知无关的字段（统一使用全局TG配置）
         sanitized = []
-        for acc in accounts.values():
+        stored_accounts = list_accounts_from_storage()
+        for acc in stored_accounts:
             a = dict(acc)
             a.pop('tgToken', None)
             a.pop('tgChatId', None)
             sanitized.append(a)
+        account_ids = [acc.get('id') for acc in stored_accounts if acc.get('id')]
         return jsonify({
             "accounts": sanitized,
-            "currentAccountId": last_selected_account_id if last_selected_account_id in accounts else (next(iter(accounts.keys())) if accounts else "")
+            "currentAccountId": last_selected_account_id if last_selected_account_id in account_ids else (account_ids[0] if account_ids else "")
         })
     data = request.json or {}
     acc_id = data.get('id')
@@ -12300,6 +12391,7 @@ def accounts_api():
         "endpoint": data.get('endpoint', 'ovh-eu'),
         "zone": data.get('zone', 'IE')
     }
+    save_accounts_to_relational_storage()
     save_accounts()
     return jsonify({"success": True, "account": accounts[acc_id]})
 
@@ -12314,6 +12406,7 @@ def delete_account(account_id):
                 mon = monitors.pop(account_id)
                 if mon and mon.running:
                     mon.stop()
+            storage.delete_monitor_subscriptions(account_id)
             # 清理该账户相关的队列项
             to_delete = [item for item in queue if item.get("accountId") == account_id]
             for item in to_delete:
@@ -12321,17 +12414,12 @@ def delete_account(account_id):
                     deleted_task_ids.add(item["id"])  # 标记为删除，后台线程立即停止处理
                 except Exception:
                     pass
-            queue = [item for item in queue if item.get("accountId") != account_id]
-            # 强制清空该账户的队列分片文件
-            q_path = os.path.join(DATA_DIR, f"queue_{account_id}.json")
-            try:
-                with open(q_path, 'w', encoding='utf-8') as f:
-                    json.dump([], f, ensure_ascii=False, indent=2)
-                add_log("INFO", f"强制清空队列文件: {q_path}", "accounts")
-            except Exception as e:
-                add_log("ERROR", f"清空队列分片文件时出错: {str(e)}", "accounts")
+            clear_queue_for_account(account_id)
+            clear_purchase_history_for_account(account_id)
             # 保存与更新统计
-            save_data()
+            save_accounts_to_relational_storage()
+            persist_queue_state()
+            persist_purchase_history_state()
             update_stats()
             add_log("INFO", f"删除账户 {account_id} 并清理 {len(to_delete)} 个队列项", "accounts")
         except Exception as e:

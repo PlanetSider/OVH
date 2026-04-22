@@ -73,6 +73,7 @@
 - requests
 - ovh SDK
 - tenacity
+- SQLite（主持久化存储）
 
 ### 部署
 - Docker
@@ -90,6 +91,7 @@
 │  ├─ api_key_config.py
 │  ├─ feishu_utils.py       # 飞书应用机器人能力
 │  ├─ server_monitor.py     # 服务器监控逻辑
+│  ├─ sqlite_storage.py     # SQLite 持久化与数据访问层
 │  ├─ telegram_utils.py     # Telegram 工具
 │  └─ requirements.txt
 ├─ src/                     # React 前端
@@ -303,7 +305,24 @@ http://localhost:19998
 
 ## 数据存储说明
 
-后端主要使用 JSON 文件持久化数据，默认位于：
+后端当前以 SQLite 作为主持久化存储，数据库默认位于：
+
+- `data/app.db`
+
+当前运行期主读写都已切换到 SQLite，包括：
+
+- 系统配置
+- 日志
+- API 账户
+- 抢购队列
+- 抢购历史
+- 服务器监控订阅
+- 服务器列表与快照
+- 飞书绑定、机器人账户选择、服务器别名、机器人待处理动作
+- 配置绑定狙击任务
+- VPS 订阅
+
+旧 JSON 文件仅保留为历史迁移来源，默认路径包括：
 
 - `backend/data/config.json`
 - `backend/data/accounts.json`
@@ -317,6 +336,27 @@ http://localhost:19998
 - `data/`
 - `logs/`
 - `cache/`
+
+## 当前验证状态
+
+已完成的本地验证包括：
+
+- `python -m py_compile backend/app.py backend/sqlite_storage.py`
+- 安装 `backend/requirements.txt` 后执行后端初始化 smoke test
+- 使用 Flask `test_client()` 验证核心 API 读写链路
+
+已通过的接口覆盖：
+
+- `/api/settings`
+- `/api/queue`
+- `/api/queue/paged`
+- `/api/queue/all`
+- `/api/purchase-history`
+- `/api/config-sniper/tasks`
+- `/api/vps-monitor/subscriptions`
+- `/api/cache/info`
+
+当前结论：SQLite 主存储方案已经能在本地真实初始化并通过核心 API 验证。
 
 ## 注意事项
 
