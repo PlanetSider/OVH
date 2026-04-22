@@ -345,7 +345,8 @@ def get_storage_key_for_file(path):
         rel = normalized[len(data_root):]
     else:
         rel = os.path.basename(normalized)
-    return f"file:{rel.replace('\\', '/')}"
+    rel = rel.replace('\\', '/')
+    return f"file:{rel}"
 
 
 def migrate_relational_data_to_sqlite():

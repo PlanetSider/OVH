@@ -4,7 +4,6 @@ import { motion } from 'framer-motion';
 import { Shield, KeyRound } from 'lucide-react';
 import { api, setApiSecretKey } from '@/utils/apiClient';
 import { toast } from 'sonner';
-import { API_URL } from '@/config/constants';
 
 
 const LoginPage = () => {
@@ -14,7 +13,6 @@ const LoginPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const targetPath = ((location.state as { from?: { pathname?: string } } | null)?.from?.pathname) || '/';
-  const targetLabel = targetPath === '/' ? '仪表盘' : targetPath;
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -59,17 +57,6 @@ const LoginPage = () => {
           </div>
         </div>
 
-        <div className="mb-5 rounded-lg border border-cyber-accent/20 bg-cyber-bg/40 px-4 py-3 text-xs text-cyber-muted space-y-2">
-          <div>
-            登录成功后将跳转到：
-            <span className="text-cyber-accent ml-1">{targetLabel}</span>
-          </div>
-          <div className="break-all">
-            当前后端地址：
-            <span className="text-cyan-300 ml-1">{API_URL}</span>
-          </div>
-        </div>
-
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
             <label className="block text-sm text-cyber-muted mb-2">访问密码</label>
@@ -85,7 +72,6 @@ const LoginPage = () => {
               />
             </div>
             <p className="text-xs text-cyber-muted mt-2">该密码需与容器环境变量或 `backend/.env` 中的 `API_SECRET_KEY` 完全一致。</p>
-            <p className="text-xs text-cyber-muted mt-1">支持直接按回车提交。</p>
           </div>
 
           <button
