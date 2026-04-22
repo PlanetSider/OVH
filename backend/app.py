@@ -230,6 +230,76 @@ def split_long_message(text: str, max_len: int = 3000):
     return chunks
 
 
+def split_long_message_by_utf8_bytes(text: str, max_bytes: int = 1200):
+    if not text:
+        return [text]
+    if len(text.encode('utf-8')) <= max_bytes:
+        return [text]
+
+    chunks = []
+    current = ""
+    current_bytes = 0
+
+    for block in text.split("\n\n"):
+        candidate = block if not current else current + "\n\n" + block
+        candidate_bytes = len(candidate.encode('utf-8'))
+        if candidate_bytes <= max_bytes:
+            current = candidate
+            current_bytes = candidate_bytes
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+            current_bytes = 0
+
+        if len(block.encode('utf-8')) <= max_bytes:
+            current = block
+            current_bytes = len(block.encode('utf-8'))
+            continue
+
+        line_buf = ""
+        line_buf_bytes = 0
+        for line in block.splitlines():
+            line_candidate = line if not line_buf else line_buf + "\n" + line
+            line_candidate_bytes = len(line_candidate.encode('utf-8'))
+            if line_candidate_bytes <= max_bytes:
+                line_buf = line_candidate
+                line_buf_bytes = line_candidate_bytes
+                continue
+
+            if line_buf:
+                chunks.append(line_buf)
+                line_buf = ""
+                line_buf_bytes = 0
+
+            if len(line.encode('utf-8')) <= max_bytes:
+                line_buf = line
+                line_buf_bytes = len(line.encode('utf-8'))
+                continue
+
+            char_buf = ""
+            char_buf_bytes = 0
+            for ch in line:
+                ch_bytes = len(ch.encode('utf-8'))
+                if char_buf and (char_buf_bytes + ch_bytes) > max_bytes:
+                    chunks.append(char_buf)
+                    char_buf = ch
+                    char_buf_bytes = ch_bytes
+                else:
+                    char_buf += ch
+                    char_buf_bytes += ch_bytes
+            if char_buf:
+                chunks.append(char_buf)
+
+        if line_buf:
+            chunks.append(line_buf)
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def get_feishu_config():
     return {
         "feishuEnabled": bool(config.get("feishuEnabled", False)),
@@ -2421,7 +2491,7 @@ def send_feishu_text(message: str, open_id=None, account_id=None):
         add_log("WARNING", "飞书消息未发送: 未绑定飞书私聊用户", "feishu")
         return False
     try:
-        chunks = split_long_message(message, 2500)
+        chunks = split_long_message_by_utf8_bytes(message, 1200)
         for chunk in chunks:
             feishu_client.send_text(target_open_id, chunk, "open_id")
         add_log("INFO", f"成功发送消息到飞书: open_id={target_open_id}, chunks={len(chunks)}", "feishu")
