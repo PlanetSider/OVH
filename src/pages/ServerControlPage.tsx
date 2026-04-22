@@ -2306,18 +2306,12 @@ const ServerControlPage: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-4 sm:gap-y-5 gap-x-6 sm:gap-x-8 text-xs sm:text-sm mb-4 sm:mb-6">
                   <div className="py-2">
                     <span className="text-cyber-muted">服务名称:</span>
-                    <span className="text-cyber-text ml-2">{selectedServer.serviceName}</span>
+                    <span className="text-cyber-text ml-2">{selectedServer.originalName || selectedServer.serviceName}</span>
                   </div>
                   <div className="py-2">
                     <span className="text-cyber-muted">自定义名称:</span>
                     <span className="text-cyber-text ml-2">{selectedServer.alias || '未设置'}</span>
                   </div>
-                  {selectedServer.originalName && (
-                    <div className="py-2">
-                      <span className="text-cyber-muted">原始名称:</span>
-                      <span className="text-cyber-text ml-2">{selectedServer.originalName}</span>
-                    </div>
-                  )}
                   {selectedServer.alias && (
                     <div className="py-2">
                       <button

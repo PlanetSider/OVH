@@ -1046,8 +1046,31 @@ def build_status_all_message():
         return "当前没有可用的 API 账户。"
     lines = [f"所有账户概览（{len(accounts)}个账户）"]
     for account_id in accounts.keys():
+        acc = accounts.get(account_id) or {}
+        client = get_ovh_client(account_id)
+        email = acc.get('alias') or account_id
+        customer_code = account_id
+        if client:
+            try:
+                account_info = client.get('/me')
+                email = account_info.get('email') or email
+                customer_code = account_info.get('customerCode') or account_info.get('nichandle') or customer_code
+            except Exception as e:
+                add_log('WARNING', f"获取账户 {account_id} 概览失败: {str(e)}", 'bot')
+        monitor_count = len([s for s in get_monitor_for_account(account_id).subscriptions if s.get('planCode')])
+        queue_count = len([item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']])
+        server_count = 0
+        if client:
+            try:
+                server_count = len(client.get('/dedicated/server'))
+            except Exception:
+                server_count = 0
         lines.append("")
-        lines.append(build_status_message(account_id))
+        lines.append(f"账户: {email}")
+        lines.append(f"- 客户代码: {customer_code}")
+        lines.append(f"- 监控任务数量: {monitor_count}")
+        lines.append(f"- 抢购任务数量: {queue_count}")
+        lines.append(f"- 服务器数量: {server_count}")
     return '\n'.join(lines).strip()
 
 
@@ -1691,10 +1714,11 @@ def run_servers_auto_refresh_once():
     server_list_cache['timestamp'] = time.time()
     current_items = get_servers_snapshot_items(api_servers)
     previous_items = (servers_snapshot or {}).get('items') or {}
+    is_initial_snapshot = len(previous_items) == 0
     new_items = diff_new_items(previous_items, current_items)
     save_servers_snapshot_data(current_items)
     save_data()
-    if config.get('serversNewServerNotifyEnabled'):
+    if config.get('serversNewServerNotifyEnabled') and (not is_initial_snapshot):
         for item in new_items:
             message_uuid = str(uuid.uuid4())
             monitor_obj = get_monitor_for_account()
@@ -1731,9 +1755,10 @@ def run_availability_auto_refresh_once():
     data = response.json()
     current_items = get_availability_snapshot_items(data if isinstance(data, list) else [])
     previous_items = (availability_snapshot or {}).get('items') or {}
+    is_initial_snapshot = len(previous_items) == 0
     new_items = diff_new_items(previous_items, current_items)
     save_availability_snapshot_data(current_items)
-    if config.get('availabilityNewServerNotifyEnabled'):
+    if config.get('availabilityNewServerNotifyEnabled') and (not is_initial_snapshot):
         for item in new_items:
             send_bot_message(build_new_availability_server_message(item))
 
