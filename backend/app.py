@@ -358,6 +358,13 @@ def migrate_relational_data_to_sqlite():
                     account_items = [a for a in raw_accounts if isinstance(a, dict) and a.get("id")]
                 elif isinstance(raw_accounts, dict):
                     account_items = [a for a in raw_accounts.values() if isinstance(a, dict) and a.get("id")]
+        for account in account_items:
+            if not isinstance(account, dict):
+                continue
+            if not account.get('email'):
+                alias = (account.get('alias') or '').strip()
+                if looks_like_email(alias):
+                    account['email'] = alias
         storage.replace_accounts(account_items)
         storage.set_meta("relational_accounts_imported", True)
 
@@ -445,6 +452,59 @@ def clear_all_purchase_history_records():
 
 def save_accounts_to_relational_storage():
     storage.replace_accounts(list(accounts.values()))
+
+
+def looks_like_email(value):
+    if not value or not isinstance(value, str):
+        return False
+    return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value.strip()) is not None
+
+
+def get_account_alias(account_id):
+    acc = accounts.get(account_id) or {}
+    return (acc.get('alias') or '').strip()
+
+
+def get_account_email(account_id):
+    acc = accounts.get(account_id) or {}
+    email = (acc.get('email') or '').strip()
+    if email:
+        return email
+    alias = (acc.get('alias') or '').strip()
+    return alias if looks_like_email(alias) else ''
+
+
+def get_account_conversation_label(account_id):
+    if not account_id:
+        return 'default'
+    alias = get_account_alias(account_id)
+    if alias:
+        return alias
+    email = get_account_email(account_id)
+    if email:
+        return email
+    return account_id
+
+
+def get_account_admin_label(account_id):
+    if not account_id:
+        return 'default'
+    parts = []
+    alias = get_account_alias(account_id)
+    email = get_account_email(account_id)
+    if alias:
+        parts.append(alias)
+    if email and email not in parts:
+        parts.append(email)
+    if account_id not in parts:
+        parts.append(account_id)
+    return ' | '.join(parts)
+
+
+def get_account_log_label(account_id):
+    if not account_id:
+        return 'default'
+    return get_account_admin_label(account_id)
 
 
 def migrate_monitor_subscriptions_to_sqlite():
@@ -1118,7 +1178,7 @@ def bind_feishu_user(open_id, user_name="", account_id=None):
         persist_feishu_users_state()
     except Exception as e:
         add_log("WARNING", f"保存飞书用户绑定失败: {str(e)}", "feishu")
-    add_log("INFO", f"已绑定飞书用户: account={aid}, open_id={open_id}", "feishu")
+    add_log("INFO", f"已绑定飞书用户: account={get_account_log_label(aid)}, open_id={open_id}", "feishu")
 
 
 def unwrap_feishu_payload(body):
@@ -1366,7 +1426,9 @@ def build_status_message(account_id):
         return "当前没有可用的 API 账户，请先在网页端配置账户。"
     acc = accounts.get(account_id) or {}
     client = get_ovh_client(account_id)
-    email = acc.get('alias') or account_id
+    conversation_label = get_account_conversation_label(account_id)
+    admin_label = get_account_admin_label(account_id)
+    email = get_account_email(account_id) or conversation_label
     customer_code = account_id
     servers = []
     if client:
@@ -1437,6 +1499,8 @@ def build_status_message(account_id):
     queue_items = [item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']]
     lines = [
         "账户概览",
+        f"- 标签: {conversation_label}",
+        f"- 管理标识: {admin_label}",
         f"- 邮箱: {email}",
         f"- 客户代码: {customer_code}",
         f"- 监控任务数量: {monitor_count}",
@@ -1479,10 +1543,6 @@ def build_status_all_message():
         return "当前没有可用的 API 账户。"
     lines = [f"所有账户概览（{len(accounts)}个账户）"]
     for account_id in accounts.keys():
-        acc = accounts.get(account_id) or {}
-        client = get_ovh_client(account_id)
-        email = acc.get('alias') or account_id
-        customer_code = account_id
         lines.append("")
         lines.append(build_status_message(account_id))
     return '\n'.join(lines).strip()
@@ -1526,7 +1586,7 @@ def list_all_account_servers():
                     display_name = get_server_alias(account_id, service_name, service_name)
                 result.append({
                     'accountId': account_id,
-                    'accountAlias': acc.get('alias') or account_id,
+                    'accountAlias': get_account_conversation_label(account_id),
                     'serviceName': service_name,
                     'displayName': display_name
                 })
@@ -1555,7 +1615,7 @@ def build_unalias_account_message():
 def build_alias_account_buttons(channel: str, user_key: str):
     buttons = []
     for account_id, acc in accounts.items():
-        label = (acc.get('alias') or account_id)
+        label = get_account_conversation_label(account_id)
         if channel == 'telegram':
             buttons.append({
                 'text': label,
@@ -1582,7 +1642,7 @@ def build_alias_account_buttons(channel: str, user_key: str):
 def build_unalias_account_buttons(channel: str, user_key: str):
     buttons = []
     for account_id, acc in accounts.items():
-        label = (acc.get('alias') or account_id)
+        label = get_account_conversation_label(account_id)
         if channel == 'telegram':
             buttons.append({
                 'text': label,
@@ -1890,10 +1950,7 @@ def build_account_snapshot_key(account_id, item_key):
 
 
 def get_account_label(account_id):
-    if not account_id:
-        return "default"
-    acc = accounts.get(account_id) or {}
-    return acc.get('alias') or account_id
+    return get_account_conversation_label(account_id)
 
 
 def build_new_availability_server_message(item, account_id=None):
@@ -2141,7 +2198,7 @@ def build_alias_list_message():
     lines = ["服务器别名清单"]
     for account_id, items in grouped.items():
         acc = accounts.get(account_id) or {}
-        account_label = acc.get('alias') or account_id
+        account_label = get_account_conversation_label(account_id)
         lines.append("")
         lines.append(f"账户: {account_label}")
         for index, item in enumerate(sorted(items, key=lambda x: x['serviceName']), 1):
@@ -2367,7 +2424,7 @@ def build_alias_list_message():
     lines = ["服务器别名清单"]
     for account_id, items in grouped.items():
         acc = accounts.get(account_id) or {}
-        account_label = acc.get('alias') or account_id
+        account_label = get_account_conversation_label(account_id)
         lines.append("")
         lines.append(f"账户: {account_label}")
         for index, item in enumerate(sorted(items, key=lambda x: x['serviceName']), 1):
@@ -2404,7 +2461,7 @@ def build_monitor_all_message():
     lines = [f"所有账户监控任务总览（{len(accounts)}个账户）"]
     for account_id, acc in accounts.items():
         subscriptions = get_monitor_for_account(account_id).subscriptions
-        account_label = acc.get('alias') or account_id
+        account_label = get_account_conversation_label(account_id)
         lines.append("")
         lines.append(f"账户: {account_label}")
         if not subscriptions:
@@ -2456,7 +2513,7 @@ def build_autobuy_all_message():
     lines = [f"所有账户抢购任务总览（{len(accounts)}个账户）"]
     for account_id, acc in accounts.items():
         items = [item for item in queue if item.get('accountId') == account_id and str(item.get('status', '')).lower() in ['running', 'pending', 'paused']]
-        account_label = acc.get('alias') or account_id
+        account_label = get_account_conversation_label(account_id)
         lines.append("")
         lines.append(f"账户: {account_label}")
         if not items:
@@ -2490,7 +2547,8 @@ def switch_bot_account(channel: str, user_key: str, email=None):
         email_lower = email.strip().lower()
         for aid, acc in accounts.items():
             alias = (acc.get('alias') or '').strip().lower()
-            if alias == email_lower:
+            acc_email = (acc.get('email') or '').strip().lower()
+            if alias == email_lower or acc_email == email_lower:
                 chosen_account = aid
                 break
         if not chosen_account:
@@ -2507,7 +2565,7 @@ def switch_bot_account(channel: str, user_key: str, email=None):
     acc = accounts.get(chosen_account) or {}
     zone = acc.get('zone') or 'N/A'
     endpoint = acc.get('endpoint') or 'N/A'
-    return True, f"已切换到 API 账户: {(acc.get('alias') or chosen_account)} | 区域: {zone} | 节点: {endpoint}"
+    return True, f"已切换到 API 账户: {get_account_conversation_label(chosen_account)} | 区域: {zone} | 节点: {endpoint}"
 
 
 def dispatch_bot_command(channel: str, user_key: str, text: str):
@@ -3485,7 +3543,7 @@ def purchase_server(queue_item):
             add_log("INFO", f"创建抢购历史(成功) 任务ID: {queue_item['id']}", "purchase")
             persist_purchase_history_state()
             update_stats()
-            add_log("INFO", f"成功购买 {queue_item['planCode']} 在 {selected_display_dc or first_dc} (订单ID: {order_id_val}, URL: {order_url_val})", "purchase")
+            add_log("INFO", f"成功购买 {queue_item['planCode']} 在 {selected_display_dc or first_dc} (订单ID: {order_id_val}, URL: {order_url_val}, 账户: {get_account_log_label(queue_item.get('accountId'))})", "purchase")
             if config.get("tgToken") and config.get("tgChatId"):
                 opt_list = queue_item.get("options", []) or []
                 options_text = ", ".join(opt_list) if opt_list else "默认配置"
@@ -3570,7 +3628,7 @@ def purchase_server(queue_item):
                 order_id = co_res.get("orderId", "")
                 order_url = co_res.get("url", "")
                 _append_history(queue_item, "success", display_dc, order_id, order_url, None, price_info_thread, sequence_idx=seq_index)
-                add_log("INFO", f"并发成功购买 {queue_item['planCode']} 在 {display_dc} (订单ID: {order_id})", "purchase")
+                add_log("INFO", f"并发成功购买 {queue_item['planCode']} 在 {display_dc} (订单ID: {order_id}, 账户: {get_account_log_label(queue_item.get('accountId'))})", "purchase")
                 # 可选通知（包含账户别名、机房显示+API代码、是否自动支付、选项、订单链接、任务ID）
                 if config.get("tgToken") and config.get("tgChatId"):
                     options_list = queue_item.get("options", []) or []
@@ -3772,14 +3830,13 @@ def auto_refresh_cache_loop():
                         save_server_plans_to_storage(server_plans)
                         persist_server_data_state()
                         update_stats()
-                        alias = (accounts.get(aid, {}) or {}).get('alias') if aid else 'global'
-                        add_log("INFO", f"自动刷新完成：账户 {aid or 'global'} ({alias}) 更新 {len(server_plans)} 台服务器", "auto_refresh")
+                        add_log("INFO", f"自动刷新完成：账户 {get_account_log_label(aid)} 更新 {len(server_plans)} 台服务器", "auto_refresh")
                         refreshed = True
                         break
                     else:
-                        add_log("WARNING", f"账户 {aid or 'global'} 自动刷新失败：API返回空数据", "auto_refresh")
+                        add_log("WARNING", f"账户 {get_account_log_label(aid)} 自动刷新失败：API返回空数据", "auto_refresh")
                 except Exception as e:
-                    add_log("WARNING", f"账户 {aid or 'global'} 自动刷新异常: {str(e)}", "auto_refresh")
+                    add_log("WARNING", f"账户 {get_account_log_label(aid)} 自动刷新异常: {str(e)}", "auto_refresh")
 
             if not refreshed:
                 add_log("ERROR", "自动刷新失败：所有候选账户均未成功", "auto_refresh")
@@ -5122,7 +5179,7 @@ def add_queue_item():
     persist_queue_state()
     update_stats()
     
-    add_log("INFO", f"添加任务 {queue_item['id']} ({queue_item['planCode']} 在 {','.join(queue_item.get('datacenters') or [])}) 到队列并立即启动 (状态: running)")
+    add_log("INFO", f"添加任务 {queue_item['id']} ({queue_item['planCode']} 在 {','.join(queue_item.get('datacenters') or [])}) 到队列并立即启动 (状态: running, 账户: {get_account_log_label(queue_item.get('accountId'))})")
     return jsonify({"status": "success", "id": queue_item["id"]})
 
 @app.route('/api/queue/<id>', methods=['DELETE'])
@@ -5298,7 +5355,7 @@ def add_subscription():
         add_log("WARNING", f"获取服务器名称失败: {str(e)}", "monitor")
     
     auto_order_quantity = data.get("autoOrderQuantity", 0)  # 自动下单数量，0表示不限制（遵循2分钟限制）
-    add_log("INFO", f"[monitor] 添加订阅: planCode={plan_code}, autoOrder={auto_order}, autoOrderQuantity={auto_order_quantity}, 接收到的数据: {list(data.keys())}", "monitor")
+    add_log("INFO", f"[monitor] 添加订阅: account={get_account_log_label(account_id)}, planCode={plan_code}, autoOrder={auto_order}, autoOrderQuantity={auto_order_quantity}, 接收到的数据: {list(data.keys())}", "monitor")
     mon = get_monitor_for_account(account_id)
     mon.add_subscription(plan_code, datacenters, notify_available, notify_unavailable, server_name, None, None, auto_order, auto_order_quantity)
     save_subscriptions(account_id)
@@ -5306,9 +5363,9 @@ def add_subscription():
     # 如果监控未运行，自动启动
     if not mon.running:
         mon.start()
-        add_log("INFO", "添加订阅后自动启动监控")
+        add_log("INFO", f"添加订阅后自动启动监控: account={get_account_log_label(account_id)}", "monitor")
     
-    add_log("INFO", f"添加服务器订阅: {plan_code} ({server_name or '未知名称'})")
+    add_log("INFO", f"添加服务器订阅: account={get_account_log_label(account_id)}, {plan_code} ({server_name or '未知名称'})")
     return jsonify({"status": "success", "message": f"已订阅 {plan_code}"})
 
 @app.route('/api/monitor/subscriptions/batch-add-all', methods=['OPTIONS', 'POST'])
@@ -5358,11 +5415,11 @@ def batch_add_all_servers():
                 server_name=server_name
             )
             added_count += 1
-            add_log("DEBUG", f"批量添加订阅: {plan_code} ({server_name or '未知名称'})", "monitor")
+            add_log("DEBUG", f"批量添加订阅: account={get_account_log_label(account_id)}, {plan_code} ({server_name or '未知名称'})", "monitor")
         except Exception as e:
             error_msg = f"{plan_code}: {str(e)}"
             errors.append(error_msg)
-            add_log("WARNING", f"批量添加订阅失败 {error_msg}", "monitor")
+            add_log("WARNING", f"批量添加订阅失败: account={get_account_log_label(account_id)}, {error_msg}", "monitor")
     
     # 保存订阅
     save_subscriptions(account_id)
@@ -5370,7 +5427,7 @@ def batch_add_all_servers():
     # 如果监控未运行，自动启动
     if not mon.running:
         mon.start()
-        add_log("INFO", "批量添加订阅后自动启动监控", "monitor")
+        add_log("INFO", f"批量添加订阅后自动启动监控: account={get_account_log_label(account_id)}", "monitor")
     
     message = f"已添加 {added_count} 个服务器到监控（全机房监控）"
     if skipped_count > 0:
@@ -5378,7 +5435,7 @@ def batch_add_all_servers():
     if errors:
         message += f"，{len(errors)} 个失败"
     
-    add_log("INFO", f"批量添加订阅完成: {message}", "monitor")
+    add_log("INFO", f"批量添加订阅完成: account={get_account_log_label(account_id)}, {message}", "monitor")
     
     return jsonify({
         "status": "success",
@@ -5396,7 +5453,7 @@ def remove_subscription(plan_code):
     
     if success:
         save_subscriptions(account_id)
-        add_log("INFO", f"删除服务器订阅: {plan_code}")
+        add_log("INFO", f"删除服务器订阅: account={get_account_log_label(account_id)}, {plan_code}")
         return jsonify({"status": "success", "message": f"已取消订阅 {plan_code}"})
     else:
         return jsonify({"status": "error", "message": "订阅不存在"}), 404
@@ -5408,7 +5465,7 @@ def clear_subscriptions():
     count = mon.clear_subscriptions()
     save_subscriptions(account_id)
     
-    add_log("INFO", f"清空所有订阅 ({count} 项)")
+    add_log("INFO", f"清空所有订阅: account={get_account_log_label(account_id)} ({count} 项)")
     return jsonify({"status": "success", "count": count, "message": f"已清空 {count} 个订阅"})
 
 @app.route('/api/monitor/subscriptions/<plan_code>/history', methods=['GET'])
@@ -5437,7 +5494,7 @@ def start_monitor():
     success = mon.start()
     
     if success:
-        add_log("INFO", "用户启动服务器监控")
+        add_log("INFO", f"用户启动服务器监控: account={get_account_log_label(account_id)}")
         return jsonify({"status": "success", "message": "监控已启动"})
     else:
         return jsonify({"status": "info", "message": "监控已在运行中"})
@@ -5449,7 +5506,7 @@ def stop_monitor():
     success = mon.stop()
     
     if success:
-        add_log("INFO", "用户停止服务器监控")
+        add_log("INFO", f"用户停止服务器监控: account={get_account_log_label(account_id)}")
         return jsonify({"status": "success", "message": "监控已停止"})
     else:
         return jsonify({"status": "info", "message": "监控未运行"})
@@ -5862,7 +5919,6 @@ def telegram_webhook():
 
             elif action == 'alias_account':
                 account_id = callback_data_obj.get('accountId')
-                acc = accounts.get(account_id) or {}
                 servers = [s for s in list_all_account_servers() if s.get('accountId') == account_id]
                 set_bot_pending_action('telegram', str(user_id), {
                     'type': 'alias_select',
@@ -5873,7 +5929,7 @@ def telegram_webhook():
                     send_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
                     _tg_post(send_url, {
                         "chat_id": chat_id,
-                        "text": build_alias_server_message(acc.get('alias') or account_id),
+                        "text": build_alias_server_message(get_account_conversation_label(account_id)),
                         "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
                         "reply_to_message_id": message_id
                     }, 10)
@@ -5881,14 +5937,13 @@ def telegram_webhook():
 
             elif action == 'unalias_account':
                 account_id = callback_data_obj.get('accountId')
-                acc = accounts.get(account_id) or {}
                 servers = [s for s in list_all_account_servers() if s.get('accountId') == account_id and server_aliases.get(f"{account_id}:{s.get('serviceName')}")]
                 buttons = build_unalias_server_buttons('telegram', str(user_id), account_id, servers)
                 if tg_token:
                     send_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
                     _tg_post(send_url, {
                         "chat_id": chat_id,
-                        "text": build_unalias_server_message(acc.get('alias') or account_id),
+                        "text": build_unalias_server_message(get_account_conversation_label(account_id)),
                         "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
                         "reply_to_message_id": message_id
                     }, 10)
@@ -6163,7 +6218,7 @@ def telegram_webhook():
                         "text": f"✅ 已添加到抢购队列！\n\n型号: {plan_code}\n机房: {datacenter.upper()}\n配置: {options_str}\n数量: {queue_item['quantity']}\n自动支付: {'是' if auto_pay else '否'}\n账户: {account_alias}",
                         "reply_to_message_id": message_id
                     }, 10)
-                add_log("INFO", f"Telegram确认下单: {plan_code}@{datacenter}, 数量: {queue_item['quantity']}, 自动支付: {'是' if auto_pay else '否'}, 账户: {account_alias}", "telegram")
+                add_log("INFO", f"Telegram确认下单: {plan_code}@{datacenter}, 数量: {queue_item['quantity']}, 自动支付: {'是' if auto_pay else '否'}, 账户: {get_account_log_label(chosen_account)}", "telegram")
                 return jsonify({"ok": True})
             else:
                 add_log("WARNING", f"未知的action: {action}", "telegram")
@@ -6386,30 +6441,27 @@ def feishu_card_action():
 
     if action_name == 'alias_account':
         account_id = action.get('accountId')
-        acc = accounts.get(account_id) or {}
         servers = [s for s in list_all_account_servers() if s.get('accountId') == account_id]
         set_bot_pending_action('feishu', open_id or 'anonymous', {
             'type': 'alias_select',
             'servers': servers
         })
         buttons = build_alias_server_buttons('feishu', open_id or 'anonymous', account_id, servers)
-        card = build_feishu_order_card('选择服务器', build_alias_server_message(acc.get('alias') or account_id), buttons)
+        card = build_feishu_order_card('选择服务器', build_alias_server_message(get_account_conversation_label(account_id)), buttons)
         send_feishu_card(card, open_id=open_id)
         return jsonify({"toast": {"type": "info", "content": "请选择服务器"}})
 
     if action_name == 'unalias_account':
         account_id = action.get('accountId')
-        acc = accounts.get(account_id) or {}
         servers = [s for s in list_all_account_servers() if s.get('accountId') == account_id and server_aliases.get(f"{account_id}:{s.get('serviceName')}")]
         buttons = build_unalias_server_buttons('feishu', open_id or 'anonymous', account_id, servers)
-        card = build_feishu_order_card('移除服务器别名', build_unalias_server_message(acc.get('alias') or account_id), buttons)
+        card = build_feishu_order_card('移除服务器别名', build_unalias_server_message(get_account_conversation_label(account_id)), buttons)
         send_feishu_card(card, open_id=open_id)
         return jsonify({"toast": {"type": "info", "content": "请选择服务器"}})
 
     if action_name == 'alias_server':
         account_id = action.get('accountId')
         service_name = action.get('serviceName')
-        acc = accounts.get(account_id) or {}
         display_name = get_server_alias(account_id, service_name, service_name)
         set_bot_pending_action('feishu', open_id or 'anonymous', {
             'type': 'alias_input',
@@ -6417,7 +6469,7 @@ def feishu_card_action():
             'serviceName': service_name,
             'displayName': display_name
         })
-        send_feishu_text(f"已选择账户：{acc.get('alias') or account_id}\n已选择服务器：{display_name} ({service_name})\n请直接回复新的别名。", open_id=open_id)
+        send_feishu_text(f"已选择账户：{get_account_conversation_label(account_id)}\n已选择服务器：{display_name} ({service_name})\n请直接回复新的别名。", open_id=open_id)
         return jsonify({"toast": {"type": "info", "content": "请直接回复新的别名"}})
 
     if action_name == 'unalias_server':
@@ -8267,7 +8319,7 @@ def quick_order():
         persist_queue_state()
         update_stats()
         
-        add_log("INFO", f"快速下单: {plancode} ({datacenter}) 已加入队列（含税价格: {with_tax}，options: {options}）", "config_sniper")
+        add_log("INFO", f"快速下单: {plancode} ({datacenter}) 已加入队列（含税价格: {with_tax}，options: {options}，账户: {get_account_log_label(account_id)}）", "config_sniper")
         
         return jsonify({
             "success": True,
@@ -12343,6 +12395,10 @@ def accounts_api():
             a = dict(acc)
             a.pop('tgToken', None)
             a.pop('tgChatId', None)
+            account_id = a.get('id')
+            if account_id:
+                a['conversationLabel'] = get_account_conversation_label(account_id)
+                a['adminLabel'] = get_account_admin_label(account_id)
             sanitized.append(a)
         account_ids = [acc.get('id') for acc in stored_accounts if acc.get('id')]
         return jsonify({
@@ -12352,6 +12408,7 @@ def accounts_api():
     data = request.json or {}
     acc_id = data.get('id')
     alias = data.get('alias')
+    email = data.get('email')
     # 如果未提供账户ID，则尝试用提供的OVH凭据自动解析
     if not acc_id:
         app_key = data.get('appKey')
@@ -12370,6 +12427,7 @@ def accounts_api():
             me = client.get('/me')
             acc_id = me.get('customerCode') or me.get('nichandle')
             alias = alias or me.get('email') or acc_id
+            email = email or me.get('email') or ''
         except Exception as e:
             qid = None
             try:
@@ -12385,6 +12443,7 @@ def accounts_api():
     accounts[acc_id] = {
         "id": acc_id,
         "alias": alias,
+        "email": email or (alias if looks_like_email(alias) else ''),
         "appKey": data.get('appKey', ''),
         "appSecret": data.get('appSecret', ''),
         "consumerKey": data.get('consumerKey', ''),
@@ -12421,7 +12480,7 @@ def delete_account(account_id):
             persist_queue_state()
             persist_purchase_history_state()
             update_stats()
-            add_log("INFO", f"删除账户 {account_id} 并清理 {len(to_delete)} 个队列项", "accounts")
+            add_log("INFO", f"删除账户 {get_account_log_label(account_id)} 并清理 {len(to_delete)} 个队列项", "accounts")
         except Exception as e:
             add_log("ERROR", f"删除账户 {account_id} 时发生错误: {str(e)}", "accounts")
         save_accounts()
@@ -12452,7 +12511,8 @@ def resolve_account_info():
             "success": True,
             "customerCode": customer_code,
             "email": email,
-            "nichandle": me.get('nichandle')
+            "nichandle": me.get('nichandle'),
+            "adminLabel": ' | '.join([part for part in [email, customer_code or me.get('nichandle'), me.get('nichandle')] if part])
         })
     except Exception as e:
         qid = None
@@ -12483,6 +12543,9 @@ def accounts_status():
             _ = client.get('/me')
             results.append({
                 "id": aid,
+                "alias": acc.get('alias'),
+                "email": acc.get('email'),
+                "adminLabel": get_account_admin_label(aid),
                 "valid": True
             })
         except Exception as e:
@@ -12498,6 +12561,9 @@ def accounts_status():
                 msg = f"{msg} OVH-Query-ID: {qid}"
             results.append({
                 "id": aid,
+                "alias": acc.get('alias'),
+                "email": acc.get('email'),
+                "adminLabel": get_account_admin_label(aid),
                 "valid": False,
                 "error": msg
             })

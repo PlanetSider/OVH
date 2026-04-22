@@ -46,6 +46,7 @@ class SQLiteStorage:
                 CREATE TABLE IF NOT EXISTS accounts (
                     id TEXT PRIMARY KEY,
                     alias TEXT,
+                    email TEXT,
                     app_key TEXT NOT NULL DEFAULT '',
                     app_secret TEXT NOT NULL DEFAULT '',
                     consumer_key TEXT NOT NULL DEFAULT '',
@@ -409,6 +410,10 @@ class SQLiteStorage:
 
     def replace_accounts(self, accounts):
         with self._lock, self._connect() as conn:
+            try:
+                conn.execute("ALTER TABLE accounts ADD COLUMN email TEXT")
+            except sqlite3.OperationalError:
+                pass
             conn.execute("DELETE FROM accounts")
             for account in accounts:
                 if not isinstance(account, dict):
@@ -419,12 +424,13 @@ class SQLiteStorage:
                 conn.execute(
                     """
                     INSERT INTO accounts(
-                        id, alias, app_key, app_secret, consumer_key, endpoint, zone, raw_json, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        id, alias, email, app_key, app_secret, consumer_key, endpoint, zone, raw_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     """,
                     (
                         account_id,
                         account.get("alias"),
+                        account.get("email"),
                         account.get("appKey", ""),
                         account.get("appSecret", ""),
                         account.get("consumerKey", ""),
