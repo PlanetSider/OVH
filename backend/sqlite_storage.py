@@ -213,6 +213,7 @@ class SQLiteStorage:
                 """
                 CREATE TABLE IF NOT EXISTS vps_subscriptions (
                     id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL DEFAULT 'default',
                     plan_code TEXT NOT NULL,
                     ovh_subsidiary TEXT NOT NULL,
                     raw_json TEXT NOT NULL,
@@ -220,6 +221,9 @@ class SQLiteStorage:
                 )
                 """
             )
+            existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(vps_subscriptions)").fetchall()}
+            if "account_id" not in existing_columns:
+                conn.execute("ALTER TABLE vps_subscriptions ADD COLUMN account_id TEXT NOT NULL DEFAULT 'default'")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS vps_monitor_state (
@@ -229,6 +233,21 @@ class SQLiteStorage:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS account_server_inventory (
+                    account_id TEXT NOT NULL,
+                    service_name TEXT NOT NULL,
+                    state TEXT,
+                    status TEXT,
+                    datacenter TEXT,
+                    raw_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (account_id, service_name)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_account_server_inventory_account_id ON account_server_inventory(account_id)")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS logs (
@@ -1030,11 +1049,12 @@ class SQLiteStorage:
                     continue
                 conn.execute(
                     """
-                    INSERT INTO vps_subscriptions(id, plan_code, ovh_subsidiary, raw_json, updated_at)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    INSERT INTO vps_subscriptions(id, account_id, plan_code, ovh_subsidiary, raw_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     """,
                     (
                         item.get("id"),
+                        item.get("accountId") or "default",
                         item.get("planCode", ""),
                         item.get("ovhSubsidiary", ""),
                         json.dumps(item, ensure_ascii=False),
@@ -1071,3 +1091,40 @@ class SQLiteStorage:
             "subscriptions": subscriptions,
             "check_interval": check_interval,
         }
+
+    def replace_account_server_inventory(self, account_id, items):
+        normalized_account_id = account_id or "default"
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM account_server_inventory WHERE account_id = ?", (normalized_account_id,))
+            for item in items or []:
+                if not isinstance(item, dict) or not item.get("serviceName"):
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO account_server_inventory(account_id, service_name, state, status, datacenter, raw_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        normalized_account_id,
+                        item.get("serviceName"),
+                        item.get("state"),
+                        item.get("status"),
+                        item.get("datacenter"),
+                        json.dumps(item, ensure_ascii=False),
+                    ),
+                )
+
+    def load_account_server_inventory(self, account_id):
+        normalized_account_id = account_id or "default"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT raw_json FROM account_server_inventory WHERE account_id = ? ORDER BY service_name",
+                (normalized_account_id,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            try:
+                items.append(json.loads(row["raw_json"]))
+            except json.JSONDecodeError:
+                continue
+        return items

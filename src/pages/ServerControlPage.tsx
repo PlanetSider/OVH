@@ -6,7 +6,7 @@ import { useToast } from "../components/ToastContainer";
 import { Server, RefreshCw, Power, HardDrive, X, AlertCircle, Activity, Cpu, Wifi, Calendar, Monitor, Mail, BarChart3, Check, Cog, Zap, Shield, Database, Globe, Network, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { apiEvents } from '@/context/APIContext';
+import { apiEvents, useAPI } from '@/context/APIContext';
 
 interface ServerInfo {
   serviceName: string;
@@ -171,6 +171,7 @@ interface CustomPartition {
 const ServerControlPage: React.FC = () => {
   const isMobile = useIsMobile();
   const { showToast, showConfirm } = useToast();
+  const { accounts, currentAccountId, setCurrentAccount } = useAPI();
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false); // 区分初始加载和刷新
@@ -503,7 +504,7 @@ const ServerControlPage: React.FC = () => {
   };
 
   // Task 1: 获取服务器列表（只显示活跃服务器）
-  const fetchServers = async (isRefresh = false): Promise<any[]> => {
+  const fetchServers = async (isRefresh = false, forceRefresh = false): Promise<any[]> => {
     // 如果是刷新，只设置刷新状态，不改变加载状态
     if (isRefresh) {
       setIsRefreshing(true);
@@ -511,7 +512,9 @@ const ServerControlPage: React.FC = () => {
       setIsLoading(true);
     }
     try {
-      const response = await api.get('/server-control/list');
+      const response = await api.get('/server-control/list', {
+        params: forceRefresh ? { refresh: 1 } : undefined
+      });
       if (response.data.success) {
         // 过滤：只显示未过期、未暂停的服务器
         const activeServers = response.data.servers.filter((s: any) => {
@@ -2166,7 +2169,7 @@ const ServerControlPage: React.FC = () => {
 
   useEffect(() => {
     fetchServers();
-  }, []);
+  }, [currentAccountId]);
 
   // 轻量级刷新：监听账户认证变化，刷新当前页面数据
   useEffect(() => {
@@ -2244,7 +2247,7 @@ const ServerControlPage: React.FC = () => {
               e.preventDefault();
               e.stopPropagation();
               if (!isLoading && !isRefreshing) {
-                fetchServers(true);
+                fetchServers(true, true);
               }
             }}
             disabled={isLoading || isRefreshing}
@@ -2266,11 +2269,34 @@ const ServerControlPage: React.FC = () => {
           </div>
         ) : servers.length === 0 ? (
           <div className="cyber-card text-center py-12 text-cyber-muted">
-            暂无活跃服务器
+            当前账号暂无活跃服务器
           </div>
         ) : (
           <>
             <div className="cyber-card mb-6 sm:mb-8">
+              <div className="mb-4">
+                <label className="block text-cyber-text font-medium mb-2">API 账户</label>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {accounts.map((account: any) => {
+                    const isActive = account.id === currentAccountId;
+                    return (
+                      <button
+                        key={account.id}
+                        type="button"
+                        onClick={() => {
+                          if (account.id !== currentAccountId) {
+                            setSelectedServer(null);
+                            setCurrentAccount(account.id);
+                          }
+                        }}
+                        className={`px-3 py-2 rounded-lg border whitespace-nowrap text-sm transition-colors ${isActive ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent' : 'bg-cyber-bg border-cyber-accent/20 text-cyber-text hover:border-cyber-accent/50'}`}
+                      >
+                        {account.conversationLabel || account.alias || account.email || account.id}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <label className="block text-cyber-text font-medium mb-2">选择服务器</label>
               <select
                 value={selectedServer?.serviceName || ''}

@@ -117,6 +117,9 @@ config = {
     "availabilityAutoRefreshIntervalSeconds": 3600,
     "serversNewServerNotifyEnabled": False,
     "availabilityNewServerNotifyEnabled": False,
+    "primaryRefreshAccountId": "",
+    "serverInventoryRefreshEnabled": False,
+    "serverInventoryRefreshIntervalSeconds": 3600,
     "sshKey": "",
 }
 
@@ -160,6 +163,7 @@ servers_snapshot = {"updatedAt": None, "items": {}}
 availability_snapshot = {"updatedAt": None, "items": {}}
 servers_auto_refresh_running = False
 availability_auto_refresh_running = False
+server_inventory_refresh_running = False
 storage = SQLiteStorage(SQLITE_DB_FILE)
 
 # 全局删除任务ID集合（用于立即停止后台线程处理）
@@ -171,9 +175,9 @@ config_sniper_running = False
 
 # VPS 监控相关
 vps_subscriptions = []
-vps_monitor_running = False
-vps_monitor_thread = None
 vps_check_interval = 60  # VPS检查间隔（秒）
+vps_monitor_states = {}
+vps_monitor_lock = threading.RLock()
 
 # 轻量并发控制结构
 queue_lock = threading.RLock()
@@ -722,6 +726,33 @@ def persist_server_data_state():
     save_snapshot_to_storage("availability", availability_snapshot)
 
 
+def load_account_server_inventory_from_storage(account_id):
+    return storage.load_account_server_inventory(account_id)
+
+
+def save_account_server_inventory_to_storage(account_id, items):
+    storage.replace_account_server_inventory(account_id, items)
+
+
+def apply_server_aliases(account_id, items):
+    normalized_account_id = account_id or 'default'
+    result = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        server_name = item.get('serviceName') or item.get('originalName') or item.get('name')
+        original_name = item.get('originalName') or server_name or '未知服务器'
+        alias_name = get_server_alias(normalized_account_id, server_name, original_name) if server_name else original_name
+        result.append({
+            **item,
+            'name': alias_name,
+            'originalName': original_name,
+            'alias': alias_name if alias_name != original_name else '',
+            'accountId': normalized_account_id,
+        })
+    return result
+
+
 def persist_runtime_state(include_logs=True):
     if include_logs:
         flush_logs()
@@ -1005,6 +1036,50 @@ def save_vps_subscriptions():
         logging.info(f"已保存 {len(vps_subscriptions)} 个VPS订阅")
     except Exception as e:
         logging.error(f"保存VPS订阅时出错: {str(e)}")
+
+
+def get_vps_account_id_from_request():
+    return get_account_id_from_request() or get_primary_refresh_account_id() or 'default'
+
+
+def get_vps_subscriptions_for_account(account_id):
+    normalized_account_id = account_id or 'default'
+    return [s for s in vps_subscriptions if (s.get('accountId') or 'default') == normalized_account_id]
+
+
+def get_vps_monitor_state(account_id):
+    normalized_account_id = account_id or 'default'
+    with vps_monitor_lock:
+        state = vps_monitor_states.get(normalized_account_id)
+        if not state:
+            state = {'running': False, 'thread': None}
+            vps_monitor_states[normalized_account_id] = state
+        return state
+
+
+def is_vps_monitor_running_for_account(account_id):
+    return bool(get_vps_monitor_state(account_id).get('running'))
+
+
+def start_vps_monitor_for_account(account_id):
+    normalized_account_id = account_id or 'default'
+    state = get_vps_monitor_state(normalized_account_id)
+    if state.get('running'):
+        return False
+    state['running'] = True
+    thread = threading.Thread(target=vps_monitor_loop, args=(normalized_account_id,), daemon=True)
+    state['thread'] = thread
+    thread.start()
+    return True
+
+
+def stop_vps_monitor_for_account(account_id):
+    normalized_account_id = account_id or 'default'
+    state = get_vps_monitor_state(normalized_account_id)
+    if not state.get('running'):
+        return False
+    state['running'] = False
+    return True
 
 def save_accounts():
     try:
@@ -1936,13 +2011,19 @@ def diff_new_items(previous_items, current_items):
     return [current_items[k] for k in new_keys]
 
 
-def get_auto_refresh_account_ids():
-    if not accounts:
-        return []
+def get_primary_refresh_account_id():
+    configured_account_id = str(config.get('primaryRefreshAccountId') or '').strip()
+    if configured_account_id and configured_account_id in accounts:
+        return configured_account_id
+    if configured_account_id and configured_account_id not in accounts:
+        add_log('WARNING', f"主刷新账号 {configured_account_id} 不存在，回退到首个可用账号", 'auto_refresh')
     account_ids = list(accounts.keys())
-    if last_selected_account_id in accounts:
-        return [last_selected_account_id] + [aid for aid in account_ids if aid != last_selected_account_id]
-    return account_ids
+    return account_ids[0] if account_ids else None
+
+
+def get_auto_refresh_account_ids():
+    primary_account_id = get_primary_refresh_account_id()
+    return [primary_account_id] if primary_account_id else []
 
 
 def build_account_snapshot_key(account_id, item_key):
@@ -2178,6 +2259,85 @@ def save_availability_snapshot_data(items):
         add_log('WARNING', f"保存实时可用性快照失败: {str(e)}", 'auto_refresh')
 
 
+def fetch_account_server_inventory(account_id):
+    client = get_ovh_client(account_id)
+    if not client:
+        return []
+    servers = []
+    server_names = client.get('/dedicated/server')
+    for server_name in server_names:
+        try:
+            server_info = client.get(f'/dedicated/server/{server_name}')
+            service_info = client.get(f'/dedicated/server/{server_name}/serviceInfos')
+            original_name = server_info.get('name', server_name)
+            alias_name = get_server_alias(account_id, server_name, original_name)
+            servers.append({
+                'serviceName': server_name,
+                'name': original_name,
+                'originalName': original_name,
+                'alias': '',
+                'commercialRange': server_info.get('commercialRange', 'N/A'),
+                'datacenter': server_info.get('datacenter', 'N/A'),
+                'state': server_info.get('state', 'unknown'),
+                'monitoring': server_info.get('monitoring', False),
+                'reverse': server_info.get('reverse', ''),
+                'ip': server_info.get('ip', 'N/A'),
+                'os': server_info.get('os', 'N/A'),
+                'bootId': server_info.get('bootId', None),
+                'professionalUse': server_info.get('professionalUse', False),
+                'status': service_info.get('status', 'unknown'),
+                'renewalType': service_info.get('renew', {}).get('automatic', False),
+                'accountId': account_id,
+                'updatedAt': datetime.now().isoformat(),
+            })
+        except Exception as e:
+            add_log("ERROR", f"获取服务器 {server_name} 详情失败: {str(e)}", "server_control")
+            servers.append({
+                'serviceName': server_name,
+                'name': server_name,
+                'originalName': server_name,
+                'alias': '',
+                'error': str(e),
+                'accountId': account_id,
+                'updatedAt': datetime.now().isoformat(),
+            })
+    return servers
+
+
+def refresh_server_inventory_for_account(account_id):
+    items = fetch_account_server_inventory(account_id)
+    save_account_server_inventory_to_storage(account_id, items)
+    return items
+
+
+def run_server_inventory_refresh_once():
+    account_ids = list(accounts.keys())
+    if not account_ids:
+        add_log('INFO', '服务器资产刷新已跳过：当前没有 API 账户', 'server_inventory')
+        return
+    for account_id in account_ids:
+        try:
+            items = refresh_server_inventory_for_account(account_id)
+            add_log('INFO', f"服务器资产刷新完成：账户 {get_account_log_label(account_id)} 共 {len(items)} 台", 'server_inventory')
+        except Exception as e:
+            add_log('WARNING', f"服务器资产刷新失败：账户 {get_account_log_label(account_id)} - {str(e)}", 'server_inventory')
+
+
+def server_inventory_refresh_loop():
+    global server_inventory_refresh_running
+    while server_inventory_refresh_running:
+        try:
+            if config.get('serverInventoryRefreshEnabled'):
+                run_server_inventory_refresh_once()
+        except Exception as e:
+            add_log('ERROR', f"服务器资产自动刷新失败: {str(e)}", 'server_inventory')
+        interval = validate_refresh_interval(config.get('serverInventoryRefreshIntervalSeconds', 3600))
+        for _ in range(interval):
+            if not server_inventory_refresh_running:
+                break
+            time.sleep(1)
+
+
 def build_alias_list_message():
     if not server_aliases:
         return "当前没有已绑定的服务器别名。"
@@ -2253,28 +2413,21 @@ def run_servers_auto_refresh_once():
     global server_plans
     account_ids = get_auto_refresh_account_ids()
     if not account_ids:
+        add_log('WARNING', '服务器列表自动刷新已跳过：未配置主刷新账号', 'auto_refresh')
         return
-    merged_snapshot_items = {}
-    primary_servers = None
-    primary_account_id = None
-    for account_id in account_ids:
-        client = get_ovh_client(account_id)
-        if not client:
-            continue
-        api_servers = load_server_list(account_id)
-        if not api_servers:
-            continue
-        if primary_servers is None:
-            primary_servers = api_servers
-            primary_account_id = account_id
-        merged_snapshot_items.update(get_servers_snapshot_items_for_account(account_id, api_servers))
-    if primary_servers is None:
+    primary_account_id = account_ids[0]
+    if not get_ovh_client(primary_account_id):
+        add_log('WARNING', f"服务器列表自动刷新失败：主刷新账号 {get_account_log_label(primary_account_id)} 未初始化客户端", 'auto_refresh')
+        return
+    primary_servers = load_server_list(primary_account_id)
+    if not primary_servers:
+        add_log('WARNING', f"服务器列表自动刷新失败：主刷新账号 {get_account_log_label(primary_account_id)} 未返回服务器列表", 'auto_refresh')
         return
     server_plans = primary_servers
     server_list_cache['data'] = primary_servers
     server_list_cache['timestamp'] = time.time()
     save_server_plans_to_storage(server_plans)
-    current_items = merged_snapshot_items
+    current_items = get_servers_snapshot_items_for_account(primary_account_id, primary_servers)
     previous_items = (servers_snapshot or {}).get('items') or {}
     is_initial_snapshot = len(previous_items) == 0
     new_items = diff_new_items(previous_items, current_items)
@@ -2319,13 +2472,14 @@ def run_servers_auto_refresh_once():
 
 
 def run_availability_auto_refresh_once():
-    endpoint = config.get('endpoint', 'ovh-eu')
-    base_url = get_api_base_url_for(endpoint)
-    api_url = f"{base_url}/v1/dedicated/server/datacenter/availabilities"
     account_ids = get_auto_refresh_account_ids()
     if not account_ids:
+        add_log('WARNING', '实时可用性自动刷新已跳过：未配置主刷新账号', 'auto_refresh')
         return
     preferred_account_id = account_ids[0]
+    refresh_config = get_current_account_config(preferred_account_id)
+    base_url = get_api_base_url_for(refresh_config.get('endpoint'))
+    api_url = f"{base_url}/v1/dedicated/server/datacenter/availabilities"
     response = requests.get(api_url, timeout=30)
     response.raise_for_status()
     data = response.json()
@@ -3805,17 +3959,10 @@ def auto_refresh_cache_loop():
             # 每2小时刷新一次
             time.sleep(2 * 60 * 60)
 
-            # 优先使用当前选择账户，失败则遍历其他账户重试
-            preferred = last_selected_account_id
-            all_accounts = list(accounts.keys())
-            candidates = []
-            if preferred and preferred in accounts:
-                candidates.append(preferred)
-            for aid in all_accounts:
-                if aid != preferred:
-                    candidates.append(aid)
+            candidates = get_auto_refresh_account_ids()
             if not candidates:
-                candidates = [None]
+                add_log("WARNING", "自动刷新服务器列表已跳过：未配置主刷新账号", "auto_refresh")
+                continue
 
             add_log("INFO", f"开始自动刷新服务器列表（候选账户: {len(candidates)}）", "auto_refresh")
 
@@ -3839,7 +3986,7 @@ def auto_refresh_cache_loop():
                     add_log("WARNING", f"账户 {get_account_log_label(aid)} 自动刷新异常: {str(e)}", "auto_refresh")
 
             if not refreshed:
-                add_log("ERROR", "自动刷新失败：所有候选账户均未成功", "auto_refresh")
+                add_log("ERROR", "自动刷新失败：主刷新账号未成功返回数据", "auto_refresh")
                 
         except Exception as e:
             add_log("ERROR", f"自动刷新缓存时出错: {str(e)}", "auto_refresh")
@@ -5002,6 +5149,12 @@ def save_settings():
         config["serversNewServerNotifyEnabled"] = bool(data.get("serversNewServerNotifyEnabled"))
     if data.get("availabilityNewServerNotifyEnabled") is not None:
         config["availabilityNewServerNotifyEnabled"] = bool(data.get("availabilityNewServerNotifyEnabled"))
+    if data.get("primaryRefreshAccountId") is not None:
+        config["primaryRefreshAccountId"] = (data.get("primaryRefreshAccountId") or "").strip()
+    if data.get("serverInventoryRefreshEnabled") is not None:
+        config["serverInventoryRefreshEnabled"] = bool(data.get("serverInventoryRefreshEnabled"))
+    if data.get("serverInventoryRefreshIntervalSeconds") is not None:
+        config["serverInventoryRefreshIntervalSeconds"] = validate_refresh_interval(data.get("serverInventoryRefreshIntervalSeconds"))
     if data.get("sshKey") is not None:
         config["sshKey"] = data.get("sshKey") or ""
 
@@ -7506,7 +7659,7 @@ def find_matching_api2_plans(config_fingerprint, target_plancode_base=None, excl
     逻辑：
         配置匹配模式：查找所有相同配置的型号
     """
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return []
     
@@ -7911,7 +8064,7 @@ def handle_matched_task(task):
     bound_config = task['bound_config']
     matched_api2_plancodes = task['matched_api2']  # API2 planCode 列表（已知型号）
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return
     
@@ -7952,7 +8105,7 @@ def start_config_sniper_monitor():
 
 
 def start_auto_refresh_monitors():
-    global servers_auto_refresh_running, availability_auto_refresh_running
+    global servers_auto_refresh_running, availability_auto_refresh_running, server_inventory_refresh_running
     if not servers_auto_refresh_running:
         servers_auto_refresh_running = True
         thread = threading.Thread(target=servers_auto_refresh_loop, daemon=True)
@@ -7963,6 +8116,11 @@ def start_auto_refresh_monitors():
         thread = threading.Thread(target=availability_auto_refresh_loop, daemon=True)
         thread.start()
         add_log('INFO', '实时可用性自动刷新线程已启动', 'auto_refresh')
+    if not server_inventory_refresh_running:
+        server_inventory_refresh_running = True
+        thread = threading.Thread(target=server_inventory_refresh_loop, daemon=True)
+        thread.start()
+        add_log('INFO', '服务器资产自动刷新线程已启动', 'server_inventory')
 
 # ==================== API 接口 ====================
 
@@ -8369,57 +8527,32 @@ def get_my_servers():
         return jsonify({}), 200
     
     account_id = get_account_id_from_request()
+    force_refresh = str(request.args.get('refresh') or '').strip().lower() in ['1', 'true', 'yes']
+    cached_servers = load_account_server_inventory_from_storage(account_id)
+    if cached_servers and not force_refresh:
+        decorated_servers = apply_server_aliases(account_id, cached_servers)
+        return jsonify({
+            "success": True,
+            "servers": decorated_servers,
+            "total": len(decorated_servers),
+            "cached": True,
+        })
+
     client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
     try:
-        # 获取服务器列表
-        server_names = client.get('/dedicated/server')
-        add_log("INFO", f"获取服务器列表成功，共 {len(server_names)} 台", "server_control")
-        
-        servers = []
-        for server_name in server_names:
-            try:
-                # 获取每台服务器的详细信息
-                server_info = client.get(f'/dedicated/server/{server_name}')
-                service_info = client.get(f'/dedicated/server/{server_name}/serviceInfos')
-                original_name = server_info.get('name', server_name)
-                alias_name = get_server_alias(account_id, server_name, original_name)
-                
-                servers.append({
-                    'serviceName': server_name,
-                    'name': alias_name,
-                    'originalName': original_name,
-                    'alias': alias_name if alias_name != original_name else '',
-                    'commercialRange': server_info.get('commercialRange', 'N/A'),
-                    'datacenter': server_info.get('datacenter', 'N/A'),
-                    'state': server_info.get('state', 'unknown'),
-                    'monitoring': server_info.get('monitoring', False),
-                    'reverse': server_info.get('reverse', ''),
-                    'ip': server_info.get('ip', 'N/A'),
-                    'os': server_info.get('os', 'N/A'),
-                    'bootId': server_info.get('bootId', None),
-                    'professionalUse': server_info.get('professionalUse', False),
-                    'status': service_info.get('status', 'unknown'),
-                    'renewalType': service_info.get('renew', {}).get('automatic', False)
-                })
-                
-            except Exception as e:
-                add_log("ERROR", f"获取服务器 {server_name} 详情失败: {str(e)}", "server_control")
-                # 即使获取详情失败，也返回基本信息
-                servers.append({
-                    'serviceName': server_name,
-                    'name': get_server_alias(account_id, server_name, server_name),
-                    'originalName': server_name,
-                    'alias': get_server_alias(account_id, server_name, server_name) if get_server_alias(account_id, server_name, server_name) != server_name else '',
-                    'error': str(e)
-                })
+        servers = fetch_account_server_inventory(account_id)
+        save_account_server_inventory_to_storage(account_id, servers)
+        decorated_servers = apply_server_aliases(account_id, servers)
+        add_log("INFO", f"获取服务器列表成功，共 {len(decorated_servers)} 台", "server_control")
         
         return jsonify({
             "success": True,
-            "servers": servers,
-            "total": len(servers)
+            "servers": decorated_servers,
+            "total": len(decorated_servers),
+            "cached": False,
         })
         
     except Exception as e:
@@ -8525,7 +8658,7 @@ def install_os(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -8973,7 +9106,7 @@ def get_server_tasks(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9014,7 +9147,7 @@ def get_task_available_timeslots(service_name, task_id):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
 
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
 
@@ -9063,7 +9196,7 @@ def schedule_task_timeslot(service_name, task_id):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
 
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
 
@@ -9108,7 +9241,7 @@ def get_boot_config(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9142,7 +9275,7 @@ def set_boot_config(service_name, boot_id):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9160,7 +9293,7 @@ def get_monitoring_status(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9177,7 +9310,7 @@ def set_monitoring_status(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9198,7 +9331,7 @@ def get_hardware_info(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9234,7 +9367,7 @@ def get_network_specs(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9263,7 +9396,7 @@ def get_server_ips(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9293,7 +9426,7 @@ def get_reverse_dns(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9321,7 +9454,7 @@ def set_reverse_dns(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9346,7 +9479,7 @@ def get_service_info(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9389,7 +9522,7 @@ def change_contact(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9442,7 +9575,7 @@ def get_interventions(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
         
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9475,7 +9608,7 @@ def get_intervention_detail(service_name, intervention_id):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
         
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9501,7 +9634,7 @@ def get_planned_interventions(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
         
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9534,7 +9667,7 @@ def get_planned_intervention_detail(service_name, intervention_id):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
         
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9560,7 +9693,7 @@ def hardware_replace(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
         
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9643,7 +9776,7 @@ def get_network_interfaces(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9701,7 +9834,7 @@ def get_mrtg_data(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9775,7 +9908,7 @@ def configure_ola_aggregation(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9818,7 +9951,7 @@ def reset_ola_configuration(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9856,7 +9989,7 @@ def get_hardware_raid_profiles(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9891,7 +10024,7 @@ def get_hardware_disk_info(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -9958,7 +10091,7 @@ def get_partition_schemes(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10038,7 +10171,7 @@ def get_ipmi_console(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10159,7 +10292,7 @@ def get_boot_modes(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10202,7 +10335,7 @@ def change_boot_mode(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10261,7 +10394,7 @@ def get_traffic_statistics(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10331,7 +10464,7 @@ def get_network_interface_stats(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10366,7 +10499,7 @@ def get_burst(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10396,7 +10529,7 @@ def update_burst(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10425,7 +10558,7 @@ def get_firewall(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10455,7 +10588,7 @@ def update_firewall(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10485,7 +10618,7 @@ def get_backup_ftp(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10509,7 +10642,7 @@ def activate_backup_ftp(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10541,7 +10674,7 @@ def delete_backup_ftp(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10563,7 +10696,7 @@ def get_backup_ftp_access(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10595,7 +10728,7 @@ def add_backup_ftp_access(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10632,7 +10765,7 @@ def delete_backup_ftp_access(service_name, ip_block):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10653,7 +10786,7 @@ def change_backup_ftp_password(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10675,7 +10808,7 @@ def get_backup_ftp_authorizable_blocks(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10696,7 +10829,7 @@ def get_backup_cloud(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10720,7 +10853,7 @@ def get_backup_cloud_offer_details(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10741,7 +10874,7 @@ def get_secondary_dns_domains(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10770,7 +10903,7 @@ def add_secondary_dns_domain(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10797,7 +10930,7 @@ def delete_secondary_dns_domain(service_name, domain):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10819,7 +10952,7 @@ def get_virtual_mac_list(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10848,7 +10981,7 @@ def create_virtual_mac(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10884,7 +11017,7 @@ def get_virtual_network_interfaces(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10913,7 +11046,7 @@ def enable_virtual_network_interface(service_name, uuid):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10934,7 +11067,7 @@ def disable_virtual_network_interface(service_name, uuid):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10956,7 +11089,7 @@ def ola_group(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -10978,7 +11111,7 @@ def ola_ungroup(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11001,7 +11134,7 @@ def get_vrack_list(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11030,7 +11163,7 @@ def remove_from_vrack(service_name, vrack):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11052,7 +11185,7 @@ def get_orderable_bandwidth(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11072,7 +11205,7 @@ def get_orderable_traffic(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11092,7 +11225,7 @@ def get_orderable_ip(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11113,7 +11246,7 @@ def get_server_options(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11143,7 +11276,7 @@ def get_ip_specs(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11164,7 +11297,7 @@ def get_ip_can_be_moved_to(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11184,7 +11317,7 @@ def get_ip_country_available(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11204,7 +11337,7 @@ def move_ip(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11234,7 +11367,7 @@ def get_ongoing_tasks(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11255,7 +11388,7 @@ def get_compliant_windows_versions(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11275,7 +11408,7 @@ def get_compliant_windows_sql_versions(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11296,7 +11429,7 @@ def terminate_service(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11318,7 +11451,7 @@ def confirm_termination(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11346,7 +11479,7 @@ def get_spla_list(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11375,7 +11508,7 @@ def create_spla(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
     
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
     
@@ -11411,7 +11544,7 @@ def get_server_bios_settings(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
 
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
 
@@ -11440,7 +11573,7 @@ def get_server_bios_settings_sgx(service_name):
     if request.method == 'OPTIONS':
         return jsonify({}), 200
 
-    client = get_ovh_client()
+    client = get_client_from_request()
     if not client:
         return jsonify({"success": False, "error": "未配置OVH API密钥"}), 401
 
@@ -11498,7 +11631,7 @@ def check_vps_datacenter_availability(plan_code, ovh_subsidiary="IE"):
     except Exception as e:
         add_log("ERROR", f"检查VPS可用性时出错: {str(e)}", "vps_monitor")
         return None
-def send_vps_summary_notification(plan_code, datacenters_list, change_type):
+def send_vps_summary_notification(plan_code, datacenters_list, change_type, account_id=None):
     """
     发送VPS库存变化汇总通知（多个数据中心）
     
@@ -11562,7 +11695,7 @@ def send_vps_summary_notification(plan_code, datacenters_list, change_type):
         if change_type == "available":
             message += "\n💡 快去抢购吧！"
         
-        result = send_bot_message(message)
+        result = send_bot_message(message, account_id=account_id)
         
         if result:
             add_log("INFO", f"✅ VPS汇总通知发送成功: {plan_code} ({len(datacenters_list)}个机房)", "vps_monitor")
@@ -11575,7 +11708,7 @@ def send_vps_summary_notification(plan_code, datacenters_list, change_type):
         add_log("ERROR", f"发送VPS汇总通知时出错: {str(e)}", "vps_monitor")
         return False
 
-def send_vps_notification(plan_code, datacenter_info, change_type):
+def send_vps_notification(plan_code, datacenter_info, change_type, account_id=None):
     """
     发送VPS库存变化通知
     
@@ -11642,7 +11775,7 @@ def send_vps_notification(plan_code, datacenter_info, change_type):
         if footer:
             message += f"\n\n{footer}"
         
-        result = send_bot_message(message)
+        result = send_bot_message(message, account_id=account_id)
         
         if result:
             add_log("INFO", f"✅ VPS通知发送成功: {plan_code}@{dc_name}", "vps_monitor")
@@ -11655,20 +11788,21 @@ def send_vps_notification(plan_code, datacenter_info, change_type):
         add_log("ERROR", f"发送VPS通知时出错: {str(e)}", "vps_monitor")
         return False
 
-def vps_monitor_loop():
+def vps_monitor_loop(account_id):
     """VPS监控主循环"""
-    global vps_monitor_running
+    normalized_account_id = account_id or 'default'
+    add_log("INFO", f"VPS监控循环已启动: account={get_account_log_label(normalized_account_id)}", "vps_monitor")
     
-    add_log("INFO", "VPS监控循环已启动", "vps_monitor")
-    
-    while vps_monitor_running:
+    while is_vps_monitor_running_for_account(normalized_account_id):
         try:
-            if vps_subscriptions:
-                add_log("INFO", f"开始检查 {len(vps_subscriptions)} 个VPS订阅...", "vps_monitor")
+            account_subscriptions = get_vps_subscriptions_for_account(normalized_account_id)
+            if account_subscriptions:
+                add_log("INFO", f"开始检查 {len(account_subscriptions)} 个VPS订阅: account={get_account_log_label(normalized_account_id)}", "vps_monitor")
                 
-                for subscription in vps_subscriptions:
-                    if not vps_monitor_running:
+                for subscription in account_subscriptions:
+                    if not is_vps_monitor_running_for_account(normalized_account_id):
                         break
+                    subscription_account_id = subscription.get('accountId') or normalized_account_id
                     
                     plan_code = subscription.get('planCode')
                     ovh_subsidiary = subscription.get('ovhSubsidiary', 'IE')
@@ -11780,17 +11914,17 @@ def vps_monitor_loop():
                         # 首次检查：发送初始状态汇总
                         if notify_available:
                             add_log("INFO", f"VPS {plan_code} 初始状态检查完成，{len(initial_available)}个数据中心", "vps_monitor")
-                            send_vps_summary_notification(plan_code, initial_available, 'initial')
+                            send_vps_summary_notification(plan_code, initial_available, 'initial', account_id=subscription_account_id)
                     else:
                         # 后续检查：发送补货汇总
                         if new_available and notify_available:
                             add_log("INFO", f"VPS {plan_code} 补货：{len(new_available)}个数据中心", "vps_monitor")
-                            send_vps_summary_notification(plan_code, new_available, 'available')
+                            send_vps_summary_notification(plan_code, new_available, 'available', account_id=subscription_account_id)
                         
                         # 发送下架汇总
                         if new_unavailable and notify_unavailable:
                             add_log("INFO", f"VPS {plan_code} 下架：{len(new_unavailable)}个数据中心", "vps_monitor")
-                            send_vps_summary_notification(plan_code, new_unavailable, 'unavailable')
+                            send_vps_summary_notification(plan_code, new_unavailable, 'unavailable', account_id=subscription_account_id)
                     
                     # 更新订阅的最后状态
                     subscription['lastStatus'] = last_status
@@ -11804,33 +11938,38 @@ def vps_monitor_loop():
                 # 保存更新后的订阅数据
                 save_vps_subscriptions()
             else:
-                add_log("INFO", "当前无VPS订阅，跳过检查", "vps_monitor")
+                add_log("INFO", f"当前无VPS订阅，跳过检查: account={get_account_log_label(normalized_account_id)}", "vps_monitor")
             
         except Exception as e:
-            add_log("ERROR", f"VPS监控循环出错: {str(e)}", "vps_monitor")
+            add_log("ERROR", f"VPS监控循环出错: account={get_account_log_label(normalized_account_id)}, {str(e)}", "vps_monitor")
             add_log("ERROR", f"错误详情: {traceback.format_exc()}", "vps_monitor")
         
         # 等待下次检查
-        if vps_monitor_running:
-            add_log("INFO", f"等待 {vps_check_interval} 秒后进行下次VPS检查...", "vps_monitor")
+        if is_vps_monitor_running_for_account(normalized_account_id):
+            add_log("INFO", f"等待 {vps_check_interval} 秒后进行下次VPS检查: account={get_account_log_label(normalized_account_id)}", "vps_monitor")
             for _ in range(vps_check_interval):
-                if not vps_monitor_running:
+                if not is_vps_monitor_running_for_account(normalized_account_id):
                     break
                 time.sleep(1)
-    
-    add_log("INFO", "VPS监控循环已停止", "vps_monitor")
+
+    state = get_vps_monitor_state(normalized_account_id)
+    state['running'] = False
+    state['thread'] = None
+    add_log("INFO", f"VPS监控循环已停止: account={get_account_log_label(normalized_account_id)}", "vps_monitor")
 
 # ==================== VPS 监控 API 接口 ====================
 
 @app.route('/api/vps-monitor/subscriptions', methods=['GET'])
 def get_vps_subscriptions():
     """获取VPS订阅列表"""
-    return jsonify(vps_subscriptions)
+    account_id = get_vps_account_id_from_request()
+    return jsonify(get_vps_subscriptions_for_account(account_id))
 
 @app.route('/api/vps-monitor/subscriptions', methods=['POST'])
 def add_vps_subscription():
     """添加VPS订阅"""
     global vps_subscriptions
+    account_id = get_vps_account_id_from_request()
     
     data = request.json
     plan_code = data.get('planCode')
@@ -11845,12 +11984,13 @@ def add_vps_subscription():
         return jsonify({"status": "error", "message": "缺少planCode参数"}), 400
     
     # 检查是否已存在
-    existing = next((s for s in vps_subscriptions if s['planCode'] == plan_code and s['ovhSubsidiary'] == ovh_subsidiary), None)
+    existing = next((s for s in vps_subscriptions if (s.get('accountId') or 'default') == account_id and s['planCode'] == plan_code and s['ovhSubsidiary'] == ovh_subsidiary), None)
     if existing:
         return jsonify({"status": "error", "message": "该VPS套餐已订阅"}), 400
     
     subscription = {
         'id': str(uuid.uuid4()),
+        'accountId': account_id,
         'planCode': plan_code,
         'ovhSubsidiary': ovh_subsidiary,
         'datacenters': datacenters,
@@ -11866,34 +12006,31 @@ def add_vps_subscription():
     vps_subscriptions.append(subscription)
     save_vps_subscriptions()
     
-    add_log("INFO", f"添加VPS订阅: {plan_code} (subsidiary: {ovh_subsidiary})", "vps_monitor")
+    add_log("INFO", f"添加VPS订阅: account={get_account_log_label(account_id)}, {plan_code} (subsidiary: {ovh_subsidiary})", "vps_monitor")
     
-    # 自动启动监控（如果还未启动）
-    global vps_monitor_running, vps_monitor_thread
-    if not vps_monitor_running:
-        vps_monitor_running = True
-        vps_monitor_thread = threading.Thread(target=vps_monitor_loop, daemon=True)
-        vps_monitor_thread.start()
-        add_log("INFO", f"自动启动VPS监控 (检查间隔: {vps_check_interval}秒)", "vps_monitor")
+    # 自动启动当前账户监控（如果还未启动）
+    if start_vps_monitor_for_account(account_id):
+        add_log("INFO", f"自动启动VPS监控: account={get_account_log_label(account_id)} (检查间隔: {vps_check_interval}秒)", "vps_monitor")
     
     return jsonify({"status": "success", "message": f"已订阅 {plan_code}", "subscription": subscription})
 
 @app.route('/api/vps-monitor/subscriptions/<subscription_id>', methods=['DELETE'])
 def remove_vps_subscription(subscription_id):
     """删除VPS订阅"""
-    global vps_subscriptions, vps_monitor_running
+    global vps_subscriptions
+    account_id = get_vps_account_id_from_request()
     
     original_count = len(vps_subscriptions)
-    vps_subscriptions = [s for s in vps_subscriptions if s['id'] != subscription_id]
+    vps_subscriptions = [s for s in vps_subscriptions if not (s['id'] == subscription_id and (s.get('accountId') or 'default') == account_id)]
     
     if len(vps_subscriptions) < original_count:
         save_vps_subscriptions()
-        add_log("INFO", f"删除VPS订阅: {subscription_id}", "vps_monitor")
+        add_log("INFO", f"删除VPS订阅: account={get_account_log_label(account_id)}, {subscription_id}", "vps_monitor")
         
-        # 如果删除后没有订阅了，自动停止监控
-        if len(vps_subscriptions) == 0 and vps_monitor_running:
-            vps_monitor_running = False
-            add_log("INFO", "所有订阅已删除，自动停止VPS监控", "vps_monitor")
+        # 如果当前账户删除后没有订阅了，自动停止该账户监控
+        if len(get_vps_subscriptions_for_account(account_id)) == 0 and is_vps_monitor_running_for_account(account_id):
+            stop_vps_monitor_for_account(account_id)
+            add_log("INFO", f"当前账户订阅已删除，自动停止VPS监控: account={get_account_log_label(account_id)}", "vps_monitor")
         
         return jsonify({"status": "success", "message": "订阅已删除"})
     else:
@@ -11902,25 +12039,28 @@ def remove_vps_subscription(subscription_id):
 @app.route('/api/vps-monitor/subscriptions/clear', methods=['DELETE'])
 def clear_vps_subscriptions():
     """清空所有VPS订阅"""
-    global vps_subscriptions, vps_monitor_running
+    global vps_subscriptions
+    account_id = get_vps_account_id_from_request()
     
-    count = len(vps_subscriptions)
-    vps_subscriptions.clear()
+    target_items = get_vps_subscriptions_for_account(account_id)
+    count = len(target_items)
+    vps_subscriptions = [s for s in vps_subscriptions if (s.get('accountId') or 'default') != account_id]
     save_vps_subscriptions()
     
-    add_log("INFO", f"清空所有VPS订阅 ({count} 项)", "vps_monitor")
+    add_log("INFO", f"清空VPS订阅: account={get_account_log_label(account_id)} ({count} 项)", "vps_monitor")
     
-    # 清空订阅后自动停止监控
-    if vps_monitor_running:
-        vps_monitor_running = False
-        add_log("INFO", "所有订阅已清空，自动停止VPS监控", "vps_monitor")
+    # 清空订阅后自动停止当前账户监控
+    if is_vps_monitor_running_for_account(account_id):
+        stop_vps_monitor_for_account(account_id)
+        add_log("INFO", f"当前账户订阅已清空，自动停止VPS监控: account={get_account_log_label(account_id)}", "vps_monitor")
     
     return jsonify({"status": "success", "count": count, "message": f"已清空 {count} 个订阅"})
 
 @app.route('/api/vps-monitor/subscriptions/<subscription_id>/history', methods=['GET'])
 def get_vps_subscription_history(subscription_id):
     """获取VPS订阅的历史记录"""
-    subscription = next((s for s in vps_subscriptions if s['id'] == subscription_id), None)
+    account_id = get_vps_account_id_from_request()
+    subscription = next((s for s in vps_subscriptions if s['id'] == subscription_id and (s.get('accountId') or 'default') == account_id), None)
     
     if not subscription:
         return jsonify({"status": "error", "message": "订阅不存在"}), 404
@@ -11937,38 +12077,37 @@ def get_vps_subscription_history(subscription_id):
 @app.route('/api/vps-monitor/start', methods=['POST'])
 def start_vps_monitor():
     """启动VPS监控"""
-    global vps_monitor_running, vps_monitor_thread
+    account_id = get_vps_account_id_from_request()
     
-    if vps_monitor_running:
+    if is_vps_monitor_running_for_account(account_id):
         return jsonify({"status": "info", "message": "VPS监控已在运行中"})
-    
-    vps_monitor_running = True
-    vps_monitor_thread = threading.Thread(target=vps_monitor_loop, daemon=True)
-    vps_monitor_thread.start()
-    
-    add_log("INFO", f"VPS监控已启动 (检查间隔: {vps_check_interval}秒)", "vps_monitor")
+
+    start_vps_monitor_for_account(account_id)
+    add_log("INFO", f"VPS监控已启动: account={get_account_log_label(account_id)} (检查间隔: {vps_check_interval}秒)", "vps_monitor")
     return jsonify({"status": "success", "message": "VPS监控已启动"})
 
 @app.route('/api/vps-monitor/stop', methods=['POST'])
 def stop_vps_monitor():
     """停止VPS监控"""
-    global vps_monitor_running
-    
-    if not vps_monitor_running:
+    account_id = get_vps_account_id_from_request()
+
+    if not is_vps_monitor_running_for_account(account_id):
         return jsonify({"status": "info", "message": "VPS监控未运行"})
-    
-    vps_monitor_running = False
-    add_log("INFO", "正在停止VPS监控...", "vps_monitor")
+
+    stop_vps_monitor_for_account(account_id)
+    add_log("INFO", f"正在停止VPS监控: account={get_account_log_label(account_id)}", "vps_monitor")
     
     return jsonify({"status": "success", "message": "VPS监控已停止"})
 
 @app.route('/api/vps-monitor/status', methods=['GET'])
 def get_vps_monitor_status():
     """获取VPS监控状态"""
+    account_id = get_vps_account_id_from_request()
     status = {
-        'running': vps_monitor_running,
-        'subscriptions_count': len(vps_subscriptions),
-        'check_interval': vps_check_interval
+        'running': is_vps_monitor_running_for_account(account_id),
+        'subscriptions_count': len(get_vps_subscriptions_for_account(account_id)),
+        'check_interval': vps_check_interval,
+        'accountId': account_id,
     }
     return jsonify(status)
 
@@ -12600,9 +12739,6 @@ if __name__ == '__main__':
         # 启动配置绑定狙击监控
         start_config_sniper_monitor()
         
-        # 启动自动刷新缓存
-        start_auto_refresh_cache()
-
         # 启动服务器列表 / 实时可用性自动刷新线程
         start_auto_refresh_monitors()
     else:

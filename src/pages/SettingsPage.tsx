@@ -27,6 +27,10 @@ const SettingsPage = () => {
     availabilityAutoRefreshIntervalSeconds,
     serversNewServerNotifyEnabled,
     availabilityNewServerNotifyEnabled,
+    primaryRefreshAccountId,
+    serverInventoryRefreshEnabled,
+    serverInventoryRefreshIntervalSeconds,
+    accounts,
     isLoading,
     checkAuthentication
   } = useAPI();
@@ -46,6 +50,9 @@ const SettingsPage = () => {
     availabilityAutoRefreshIntervalSeconds: 3600,
     serversNewServerNotifyEnabled: false,
     availabilityNewServerNotifyEnabled: false,
+    primaryRefreshAccountId: "",
+    serverInventoryRefreshEnabled: false,
+    serverInventoryRefreshIntervalSeconds: 3600,
     sshKey: ""
   });
   const [isSaving, setIsSaving] = useState(false);
@@ -84,9 +91,12 @@ const SettingsPage = () => {
       availabilityAutoRefreshEnabled: !!availabilityAutoRefreshEnabled,
       availabilityAutoRefreshIntervalSeconds: availabilityAutoRefreshIntervalSeconds || 3600,
       serversNewServerNotifyEnabled: !!serversNewServerNotifyEnabled,
-      availabilityNewServerNotifyEnabled: !!availabilityNewServerNotifyEnabled
+      availabilityNewServerNotifyEnabled: !!availabilityNewServerNotifyEnabled,
+      primaryRefreshAccountId: primaryRefreshAccountId || "",
+      serverInventoryRefreshEnabled: !!serverInventoryRefreshEnabled,
+      serverInventoryRefreshIntervalSeconds: serverInventoryRefreshIntervalSeconds || 3600
     }));
-  }, [tgToken, tgChatId, feishuEnabled, feishuAppId, feishuAppSecret, feishuVerificationToken, feishuEncryptKey, serversAutoRefreshEnabled, serversAutoRefreshIntervalSeconds, availabilityAutoRefreshEnabled, availabilityAutoRefreshIntervalSeconds, serversNewServerNotifyEnabled, availabilityNewServerNotifyEnabled]);
+  }, [tgToken, tgChatId, feishuEnabled, feishuAppId, feishuAppSecret, feishuVerificationToken, feishuEncryptKey, serversAutoRefreshEnabled, serversAutoRefreshIntervalSeconds, availabilityAutoRefreshEnabled, availabilityAutoRefreshIntervalSeconds, serversNewServerNotifyEnabled, availabilityNewServerNotifyEnabled, primaryRefreshAccountId, serverInventoryRefreshEnabled, serverInventoryRefreshIntervalSeconds]);
 
   // 加载后端设置中的 SSH 公钥
   useEffect(() => {
@@ -109,7 +119,10 @@ const SettingsPage = () => {
           availabilityAutoRefreshEnabled: !!cfg.availabilityAutoRefreshEnabled,
           availabilityAutoRefreshIntervalSeconds: Number(cfg.availabilityAutoRefreshIntervalSeconds || prev.availabilityAutoRefreshIntervalSeconds || 3600),
           serversNewServerNotifyEnabled: !!cfg.serversNewServerNotifyEnabled,
-          availabilityNewServerNotifyEnabled: !!cfg.availabilityNewServerNotifyEnabled
+          availabilityNewServerNotifyEnabled: !!cfg.availabilityNewServerNotifyEnabled,
+          primaryRefreshAccountId: cfg.primaryRefreshAccountId || prev.primaryRefreshAccountId || "",
+          serverInventoryRefreshEnabled: !!cfg.serverInventoryRefreshEnabled,
+          serverInventoryRefreshIntervalSeconds: Number(cfg.serverInventoryRefreshIntervalSeconds || prev.serverInventoryRefreshIntervalSeconds || 3600)
         }));
       } catch {}
     })();
@@ -347,6 +360,9 @@ const SettingsPage = () => {
           availabilityAutoRefreshIntervalSeconds: Number(formValues.availabilityAutoRefreshIntervalSeconds || 3600),
           serversNewServerNotifyEnabled: formValues.serversNewServerNotifyEnabled,
           availabilityNewServerNotifyEnabled: formValues.availabilityNewServerNotifyEnabled,
+          primaryRefreshAccountId: formValues.primaryRefreshAccountId || undefined,
+          serverInventoryRefreshEnabled: formValues.serverInventoryRefreshEnabled,
+          serverInventoryRefreshIntervalSeconds: Number(formValues.serverInventoryRefreshIntervalSeconds || 3600),
           sshKey: formValues.sshKey || undefined
         });
         toast.success("访问密码与通知配置已保存，页面将刷新");
@@ -842,6 +858,24 @@ const SettingsPage = () => {
             <div className="cyber-panel p-6 mt-6">
               <h2 className="text-lg font-bold mb-4">🔄 自动刷新与新增服务器通知</h2>
               <div className="space-y-4">
+                <div>
+                  <label className="block text-cyber-muted mb-1 text-sm">主刷新账号</label>
+                  <select
+                    name="primaryRefreshAccountId"
+                    value={formValues.primaryRefreshAccountId}
+                    onChange={handleChange}
+                    className="cyber-input w-full"
+                  >
+                    <option value="">自动选择首个账号</option>
+                    {accounts.map((account: any) => (
+                      <option key={account.id} value={account.id}>
+                        {account.conversationLabel || account.alias || account.email || account.id}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-cyber-muted mt-2">仅用于服务器列表自动刷新和实时可用性自动刷新，其他监控与任务仍按各自账号独立执行。</p>
+                </div>
+
                 <label className="flex items-center gap-2 text-sm text-cyber-text">
                   <input type="checkbox" name="serversAutoRefreshEnabled" checked={formValues.serversAutoRefreshEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
                   启用服务器列表自动刷新
@@ -861,8 +895,18 @@ const SettingsPage = () => {
                   <input type="checkbox" name="availabilityNewServerNotifyEnabled" checked={formValues.availabilityNewServerNotifyEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
                   启用实时可用性新增服务器通知
                 </label>
+
+                <div className="pt-2 border-t border-cyber-accent/20">
+                  <label className="flex items-center gap-2 text-sm text-cyber-text">
+                    <input type="checkbox" name="serverInventoryRefreshEnabled" checked={formValues.serverInventoryRefreshEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
+                    启用已购服务器资产自动刷新
+                  </label>
+                  <input type="number" min={3600} step={3600} name="serverInventoryRefreshIntervalSeconds" value={formValues.serverInventoryRefreshIntervalSeconds} onChange={handleChange} className="cyber-input w-full mt-3" placeholder="已购服务器资产刷新间隔（秒，最小3600）" />
+                  <p className="text-xs text-cyber-muted mt-2">该任务会遍历所有 API 账户，周期性刷新服务器控制页面所需的已购服务器数据缓存。</p>
+                </div>
+
                 <div className="text-xs text-cyber-muted bg-cyber-grid/10 border border-cyber-accent/20 rounded-lg p-3">
-                  最小刷新间隔为 3600 秒。服务器列表新增服务器将发送交互式通知，实时可用性新增服务器将发送文本通知。
+                  最小刷新间隔为 3600 秒。服务器列表新增服务器将发送交互式通知，实时可用性新增服务器将发送文本通知；已购服务器资产刷新会更新服务器控制页面缓存。
                 </div>
               </div>
             </div>

@@ -32,6 +32,9 @@ interface APIContextType {
   availabilityAutoRefreshIntervalSeconds: number;
   serversNewServerNotifyEnabled: boolean;
   availabilityNewServerNotifyEnabled: boolean;
+  primaryRefreshAccountId: string;
+  serverInventoryRefreshEnabled: boolean;
+  serverInventoryRefreshIntervalSeconds: number;
   iam: string;
   zone: string;
   isLoading: boolean;
@@ -64,6 +67,9 @@ interface APIKeysType {
   availabilityAutoRefreshIntervalSeconds?: number;
   serversNewServerNotifyEnabled?: boolean;
   availabilityNewServerNotifyEnabled?: boolean;
+  primaryRefreshAccountId?: string;
+  serverInventoryRefreshEnabled?: boolean;
+  serverInventoryRefreshIntervalSeconds?: number;
   iam?: string;
   zone?: string;
 }
@@ -90,6 +96,9 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
   const [availabilityAutoRefreshIntervalSeconds, setAvailabilityAutoRefreshIntervalSeconds] = useState<number>(3600);
   const [serversNewServerNotifyEnabled, setServersNewServerNotifyEnabled] = useState<boolean>(false);
   const [availabilityNewServerNotifyEnabled, setAvailabilityNewServerNotifyEnabled] = useState<boolean>(false);
+  const [primaryRefreshAccountId, setPrimaryRefreshAccountId] = useState<string>('');
+  const [serverInventoryRefreshEnabled, setServerInventoryRefreshEnabled] = useState<boolean>(false);
+  const [serverInventoryRefreshIntervalSeconds, setServerInventoryRefreshIntervalSeconds] = useState<number>(3600);
   const [iam, setIam] = useState<string>('go-ovh-ie');
   const [zone, setZone] = useState<string>('IE');
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -128,6 +137,9 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         setAvailabilityAutoRefreshIntervalSeconds(Number(data?.availabilityAutoRefreshIntervalSeconds || 3600));
         setServersNewServerNotifyEnabled(!!data?.serversNewServerNotifyEnabled);
         setAvailabilityNewServerNotifyEnabled(!!data?.availabilityNewServerNotifyEnabled);
+        setPrimaryRefreshAccountId(data?.primaryRefreshAccountId || '');
+        setServerInventoryRefreshEnabled(!!data?.serverInventoryRefreshEnabled);
+        setServerInventoryRefreshIntervalSeconds(Number(data?.serverInventoryRefreshIntervalSeconds || 3600));
 
         // 仅当存在全局（旧）OVH设置时才填充这些字段
         if (data && data.appKey) {
@@ -229,6 +241,9 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         availabilityAutoRefreshIntervalSeconds: keys.availabilityAutoRefreshIntervalSeconds || 3600,
         serversNewServerNotifyEnabled: !!keys.serversNewServerNotifyEnabled,
         availabilityNewServerNotifyEnabled: !!keys.availabilityNewServerNotifyEnabled,
+        primaryRefreshAccountId: keys.primaryRefreshAccountId || '',
+        serverInventoryRefreshEnabled: !!keys.serverInventoryRefreshEnabled,
+        serverInventoryRefreshIntervalSeconds: keys.serverInventoryRefreshIntervalSeconds || 3600,
         iam: keys.iam || 'go-ovh-ie',
         zone: keys.zone || 'IE'
       });
@@ -250,6 +265,9 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
       setAvailabilityAutoRefreshIntervalSeconds(keys.availabilityAutoRefreshIntervalSeconds || 3600);
       setServersNewServerNotifyEnabled(!!keys.serversNewServerNotifyEnabled);
       setAvailabilityNewServerNotifyEnabled(!!keys.availabilityNewServerNotifyEnabled);
+      setPrimaryRefreshAccountId(keys.primaryRefreshAccountId || '');
+      setServerInventoryRefreshEnabled(!!keys.serverInventoryRefreshEnabled);
+      setServerInventoryRefreshIntervalSeconds(keys.serverInventoryRefreshIntervalSeconds || 3600);
       setIam(keys.iam || 'go-ovh-ie');
       setZone(keys.zone || 'IE');
       
@@ -322,6 +340,9 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
     availabilityAutoRefreshIntervalSeconds,
     serversNewServerNotifyEnabled,
     availabilityNewServerNotifyEnabled,
+    primaryRefreshAccountId,
+    serverInventoryRefreshEnabled,
+    serverInventoryRefreshIntervalSeconds,
     iam,
     zone,
     isLoading,
