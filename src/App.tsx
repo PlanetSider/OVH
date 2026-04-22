@@ -19,6 +19,7 @@ import MonitorPage from "./pages/MonitorPage";
 import VPSMonitorPage from "./pages/VPSMonitorPage";
 import ServerControlPage from "./pages/ServerControlPage";
 import AccountManagementPage from "./pages/AccountManagementPage";
+import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/NotFound";
 import Layout from "./components/Layout";
 
@@ -35,11 +36,12 @@ const queryClient = new QueryClient({
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <ToastProvider>
-      <PasswordGate>
-        <API_Provider>
-          <TooltipProvider>
-            <BrowserRouter>
+      <API_Provider>
+        <TooltipProvider>
+          <BrowserRouter>
+            <PasswordGate>
               <Routes>
+                <Route path="/login" element={<LoginPage />} />
                 <Route path="/" element={<Layout />}>
                   <Route index element={<Dashboard />} />
                   <Route path="servers" element={<ServersPage />} />
@@ -56,12 +58,12 @@ const App = () => (
                   <Route path="*" element={<NotFound />} />
                 </Route>
               </Routes>
-            </BrowserRouter>
-            <Toaster />
-            <SonnerToaster />
-          </TooltipProvider>
-        </API_Provider>
-      </PasswordGate>
+            </PasswordGate>
+          </BrowserRouter>
+          <Toaster />
+          <SonnerToaster />
+        </TooltipProvider>
+      </API_Provider>
     </ToastProvider>
   </QueryClientProvider>
 );

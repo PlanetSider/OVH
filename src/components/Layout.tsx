@@ -160,7 +160,7 @@ const Layout = () => {
             !isMobile ? "lg:ml-72" : "ml-0"
           } relative`}
         >
-          {!isLoading && !isAuthenticated && <APINotice />}
+          {!isLoading && !isAuthenticated && location.pathname !== '/login' && <APINotice />}
           
           <div className="container mx-auto max-w-7xl">
             {/* 移除面包屑部分，直接显示页面内容 */}

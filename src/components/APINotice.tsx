@@ -25,7 +25,7 @@ const APINotice = () => {
   const showPasswordNotice = passwordValid === false;
   const showAPINotice = passwordValid === true && !isAuthenticated;
   if (!showPasswordNotice && !showAPINotice) return null;
-  const targetLink = showPasswordNotice ? '/settings' : '/api-accounts';
+  const targetLink = showPasswordNotice ? '/login' : '/api-accounts';
   return (
     <motion.div
       initial={{ opacity: 0, y: -20 }}
@@ -51,13 +51,13 @@ const APINotice = () => {
           <line x1="12" y1="17" x2="12.01" y2="17"></line>
         </svg>
         <div className="text-cyber-muted">
-          {showPasswordNotice ? '尚未配置访问密码，无法进入面板或调用后端接口。' : '您尚未配置 OVH API，某些功能将无法正常使用。'}
+          {showPasswordNotice ? '尚未通过访问密码验证，请先登录进入面板。' : '您尚未配置 OVH API，某些功能将无法正常使用。'}
         </div>
         <Link
           to={targetLink}
           className="cyber-button text-xs px-3 py-1 flex items-center justify-center"
         >
-          {showPasswordNotice ? '配置访问密码' : '配置 API'}
+          {showPasswordNotice ? '前往登录' : '配置 API'}
         </Link>
       </div>
     </motion.div>

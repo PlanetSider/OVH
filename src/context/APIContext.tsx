@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { api } from '@/utils/apiClient';
 import { toast } from 'sonner';
+import { clearApiSecretKey, clearCurrentAccountId } from '@/utils/apiClient';
 
 // 创建一个事件总线，用于在API认证状态变化时通知其他组件
 export const apiEvents = {
@@ -47,6 +48,7 @@ interface APIContextType {
   refreshAccounts: () => Promise<void>;
   accountStatuses: Record<string, { valid: boolean; error?: string }>;
   refreshAccountStatuses: () => Promise<void>;
+  logout: () => void;
 }
 
 interface APIKeysType {
@@ -320,6 +322,16 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const logout = (): void => {
+    clearApiSecretKey();
+    clearCurrentAccountId();
+    setCurrentAccountIdState('');
+    setIsAuthenticated(false);
+    setAccounts([]);
+    setAccountStatuses({});
+    apiEvents.emitAuthChanged(false);
+  };
+
   // 移除基于 currentAccountId 的二次认证，避免重复触发刷新
 
   const value = {
@@ -354,7 +366,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
     setCurrentAccount,
     refreshAccounts,
     accountStatuses,
-    refreshAccountStatuses
+    refreshAccountStatuses,
+    logout
   };
 
   return <APIContext.Provider value={value}>{children}</APIContext.Provider>;

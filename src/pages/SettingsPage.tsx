@@ -332,19 +332,35 @@ const SettingsPage = () => {
     e.preventDefault();
     
     // Validate API Secret Key
-    if (!formValues.apiSecretKey) {
+    const normalizedApiSecretKey = (formValues.apiSecretKey || '').trim();
+    if (!normalizedApiSecretKey) {
       toast.error("请设置访问密码");
       return;
     }
     
     setIsSaving(true);
     try {
-      // 1. 先保存访问密码到 localStorage（这个总是要保存的）
-      setApiSecretKey(formValues.apiSecretKey);
+      // 1. 先保存访问密码到 localStorage，并立即用 /settings 校验密码是否正确
+      setApiSecretKey(normalizedApiSecretKey);
+      setFormValues(prev => ({ ...prev, apiSecretKey: normalizedApiSecretKey }));
       
       // 等待一下确保 localStorage 写入完成
       await new Promise(resolve => setTimeout(resolve, 100));
+
+      try {
+        await api.get('/settings');
+      } catch (error: any) {
+        const status = error?.response?.status;
+        if (status === 401) {
+          toast.error('访问密码不正确，请检查后重试');
+        } else {
+          toast.error(error?.response?.data?.error || error?.message || '无法验证访问密码');
+        }
+        setIsSaving(false);
+        return;
+      }
       
+      let settingsSaved = false;
       try {
         await api.post('/settings', {
           tgToken: formValues.tgToken || undefined,
@@ -365,11 +381,20 @@ const SettingsPage = () => {
           serverInventoryRefreshIntervalSeconds: Number(formValues.serverInventoryRefreshIntervalSeconds || 3600),
           sshKey: formValues.sshKey || undefined
         });
-        toast.success("访问密码与通知配置已保存，页面将刷新");
-      } catch (err) {
-        toast.error("保存通知配置失败");
+        settingsSaved = true;
+      } catch (err: any) {
+        console.error('Error saving notification settings:', err);
       }
+
+      if (settingsSaved) {
+        toast.success("访问密码与通知配置已保存，页面将刷新");
+      } else {
+        toast.success("访问密码验证通过，页面将刷新进入面板");
+        toast.warning("其它设置保存失败，请进入面板后重新保存通知配置");
+      }
+
       setTimeout(() => { window.location.reload(); }, 800);
+
       // 无论是否有OVH配置，确保SSH设置已同步保存
       try {
         await api.post('/settings', {
@@ -393,7 +418,7 @@ const SettingsPage = () => {
         transition={{ duration: 0.3 }}
       >
         <h1 className={`${isMobile ? 'text-2xl' : 'text-3xl'} font-bold mb-1 cyber-glow-text`}>设置</h1>
-        <p className="text-cyber-muted text-sm mb-4 sm:mb-6">配置访问密码和通知设置</p>
+        <p className="text-cyber-muted text-sm mb-4 sm:mb-6">配置通知、自动刷新和系统运行参数</p>
       </motion.div>
 
       {isLoading ? (
@@ -405,7 +430,7 @@ const SettingsPage = () => {
         <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
           <div className="lg:col-span-2">
             <div className="cyber-panel p-4 sm:p-6 space-y-4 sm:space-y-6">
-              {/* 访问密码 */}
+              {/* 访问密码（仅用于更新浏览器内保存的访问密钥） */}
               <div>
                 <h2 className={`${isMobile ? 'text-lg' : 'text-xl'} font-bold mb-3 sm:mb-4`}>🔐 访问密码</h2>
                 <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
@@ -449,10 +474,10 @@ const SettingsPage = () => {
                   <div className="text-xs text-cyan-400 mt-2 space-y-1">
                     <p>💡 请在Docker的 <code className="bg-cyan-500/20 px-1 py-0.5 rounded">environment</code> 参数或 <code className="bg-cyan-500/20 px-1 py-0.5 rounded">backend/.env</code> 文件中查找 <code className="bg-cyan-500/20 px-1 py-0.5 rounded">API_SECRET_KEY</code> 的值并复制到此处</p>
                     <p className="text-purple-300">
-                      <strong>双重用途：</strong>① 前后端通信安全验证  ② 面板访问密码
+                      <strong>用途：</strong>用于前后端通信安全验证，同时作为面板登录密码
                     </p>
                     <p className="text-yellow-300">
-                      ⚡ <strong>非首次配置？</strong>只需填写访问密码并保存，即可快速解锁进入面板（其他字段无需填写）
+                      ⚡ 登录入口已独立为 <strong>/login</strong> 页面；此处主要用于更新当前浏览器保存的访问密钥
                     </p>
                   </div>
                 </div>
@@ -845,9 +870,9 @@ const SettingsPage = () => {
                 
                 <div className="cyber-grid-line pt-4">
                   <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3 mb-4">
-                    <p className="text-xs text-purple-300 font-semibold mb-1.5">🔐 快速解锁提示</p>
+                    <p className="text-xs text-purple-300 font-semibold mb-1.5">🔐 访问密码提示</p>
                     <p className="text-xs text-purple-200 leading-relaxed">
-                      如果您已完成初次配置，本页面还可作为<strong>面板解锁功能</strong>使用。只需输入 <strong>访问密码</strong>（其他字段可不填），点击保存即可进入面板。
+                      面板登录入口已独立为 <strong>/login</strong>。如果当前浏览器保存的访问密钥需要更新，可在这里重新填写并保存。
                     </p>
                   </div>
                   

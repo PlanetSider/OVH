@@ -1,4 +1,4 @@
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useAPI } from "@/context/APIContext";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -12,7 +12,8 @@ interface SidebarProps {
 
 const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
   const location = useLocation();
-  const { isAuthenticated, accounts, currentAccountId, setCurrentAccount } = useAPI();
+  const navigate = useNavigate();
+  const { isAuthenticated, accounts, currentAccountId, setCurrentAccount, logout } = useAPI();
   const isMobile = useIsMobile();
   const currentZone = (accounts.find((acc: any) => acc?.id === currentAccountId)?.zone) || '';
   const [appVersion, setAppVersion] = useState<string>('-');
@@ -67,6 +68,11 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
     if (path === "/" && location.pathname === "/") return true;
     if (path !== "/" && location.pathname.startsWith(path)) return true;
     return false;
+  };
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login', { replace: true });
   };
 
   return (
@@ -247,6 +253,13 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
               ))}
             </select>
           </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full text-xs px-3 py-2 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-colors"
+          >
+            退出登录
+          </button>
         </div>
       </div>
     </div>
