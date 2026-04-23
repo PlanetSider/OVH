@@ -369,12 +369,12 @@ const VPSMonitorPage = () => {
               <span className={`absolute top-0.5 bottom-0.5 left-1 transition-all duration-200 rounded-full bg-cyber-accent ${scopeAll ? 'translate-x-[84px] w-[88px]' : 'translate-x-0 w-[88px]'}`} />
             </div>
           </div>
-          <div className="flex justify-between items-center">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
           <h4 className="font-semibold flex items-center gap-2">
             <Server size={18} />
             VPS订阅列表
           </h4>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {subscriptions.length > 0 && (
               <button
                 onClick={handleClearAll}
@@ -453,7 +453,7 @@ const VPSMonitorPage = () => {
               </div>
               <div className="space-y-2">
                 <p className="text-sm font-medium text-cyber-accent">通知设置</p>
-                <div className="flex gap-4">
+                <div className="flex flex-wrap gap-4">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"

@@ -91,6 +91,10 @@ const Dashboard = () => {
     return '运行';
   };
 
+  const getQueueStatusClassName = (status: string) => {
+    return status === 'paused' ? 'text-red-400' : 'text-green-400';
+  };
+
   const getMonitorNotifyLabel = (sub: MonitorSubscription) => {
     if (sub.notifyAvailable && sub.notifyUnavailable) return '有货/无货提醒';
     if (sub.notifyUnavailable) return '无货时提醒';
@@ -361,22 +365,22 @@ const Dashboard = () => {
                     {queueItems.map((item) => (
                       <div key={item.id} className="p-3 bg-cyber-grid/10 rounded-lg border border-cyber-accent/20">
                         <div className="min-w-0 flex-1 space-y-1.5 text-xs text-cyber-muted">
-                          <div className="grid grid-cols-3 gap-3 items-center">
-                            <div className="font-medium text-cyber-text truncate">{item.planCode}</div>
-                            <div className="text-center text-cyber-accent truncate">状态：{getQueueStatusLabel(item.status)}</div>
-                            <div className="font-medium text-cyber-text truncate text-right">{getServerMeta(item.planCode)?.name || '-'}</div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 sm:gap-3 items-start sm:items-center">
+                            <div className="font-medium text-cyber-text break-all sm:truncate">{item.planCode}</div>
+                            <div className={`text-left sm:text-center break-words font-medium ${getQueueStatusClassName(item.status)}`}>{getQueueStatusLabel(item.status)}</div>
+                            <div className="font-medium text-cyber-text text-left sm:text-right break-words sm:truncate">{getServerMeta(item.planCode)?.name || '-'}</div>
                           </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <div>机房：{(item.datacenters && item.datacenters.length > 0 ? item.datacenters : (item.datacenter ? [item.datacenter] : ['全部'])).map(dc => dc.toUpperCase()).join(' > ')}</div>
-                            <div>账户：{getAccountLabel(item.accountId)}</div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
+                            <div className="break-words">机房：{(item.datacenters && item.datacenters.length > 0 ? item.datacenters : (item.datacenter ? [item.datacenter] : ['全部'])).map(dc => dc.toUpperCase()).join(' > ')}</div>
+                            <div className="break-words sm:text-right">账户：{getAccountLabel(item.accountId)}</div>
                           </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <div>内存：{getServerMeta(item.planCode)?.memory || '-'}</div>
-                            <div>硬盘：{getServerMeta(item.planCode)?.storage || '-'}</div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
+                            <div className="break-words">内存：{getServerMeta(item.planCode)?.memory || '-'}</div>
+                            <div className="break-words sm:text-right">硬盘：{getServerMeta(item.planCode)?.storage || '-'}</div>
                           </div>
-                          <div className="flex items-center justify-between gap-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
                             <div>数量：{item.quantity || 1}</div>
-                            <div>重试间隔：{item.retryInterval || 0} 秒</div>
+                            <div className="sm:text-right">重试间隔：{item.retryInterval || 0} 秒</div>
                           </div>
                         </div>
                       </div>
@@ -397,17 +401,17 @@ const Dashboard = () => {
                     {monitorSubscriptions.map((sub, idx) => (
                       <div key={`${sub.planCode}-${idx}`} className="p-3 bg-cyber-grid/10 rounded-lg border border-green-500/20">
                         <div className="space-y-1.5 text-xs text-cyber-muted">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
-                            <div className="text-xs font-medium text-cyber-text truncate text-right">{sub.serverName || getServerMeta(sub.planCode)?.name || '-'}</div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
+                            <div className="font-medium text-cyber-text break-all sm:truncate">{sub.planCode}</div>
+                            <div className="text-xs font-medium text-cyber-text text-left sm:text-right break-words sm:truncate">{sub.serverName || getServerMeta(sub.planCode)?.name || '-'}</div>
                           </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <div>机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
-                            <div>账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
+                            <div className="break-words">机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
+                            <div className="break-words sm:text-right">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
                           </div>
-                          <div className="flex items-center justify-between gap-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
                             <div className="text-green-400">自动下单：{sub.autoOrder ? '是' : '否'}</div>
-                            <div>{getMonitorNotifyLabel(sub)}</div>
+                            <div className="break-words sm:text-right">{getMonitorNotifyLabel(sub)}</div>
                           </div>
                         </div>
                       </div>
@@ -428,13 +432,13 @@ const Dashboard = () => {
                     {vpsSubscriptions.map((sub) => (
                       <div key={sub.id} className="p-3 bg-cyber-grid/10 rounded-lg border border-blue-500/20">
                         <div className="space-y-1.5 text-xs text-cyber-muted">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
-                            <div>{sub.ovhSubsidiary}</div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
+                            <div className="font-medium text-cyber-text break-all sm:truncate">{sub.planCode}</div>
+                            <div className="text-left sm:text-right">{sub.ovhSubsidiary}</div>
                           </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <div>机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
-                            <div>账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
+                            <div className="break-words">机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
+                            <div className="break-words sm:text-right">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
                           </div>
                         </div>
                       </div>

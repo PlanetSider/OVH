@@ -246,30 +246,30 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
       <div className="border-t border-cyber-accent/20 p-4 bg-cyber-bg/30">
         <div className="space-y-3">
           <div className="text-xs">
-            <div className="flex items-center justify-between">
-              <div className={`flex items-center ${isAuthenticated ? 'text-green-400' : 'text-cyber-muted'}`}>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className={`flex items-center min-w-0 ${isAuthenticated ? 'text-green-400' : 'text-cyber-muted'}`}>
                 <span className={`w-2 h-2 rounded-full mr-2 ${isAuthenticated ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`}></span>
-                <span>{isAuthenticated ? 'API已连接' : 'API未连接'}</span>
+                <span className="truncate">{isAuthenticated ? 'API已连接' : 'API未连接'}</span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] sm:justify-end">
                 {currentZone && (
                   <span className="px-2 py-0.5 text-[10px] rounded-md bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
                     {currentZone}
                   </span>
                 )}
-                <span className="text-cyber-muted text-xs">{appVersion}</span>
+                <span className="text-cyber-muted break-all">{appVersion}</span>
               </div>
             </div>
           </div>
-          <div className="text-xs flex items-center justify-between p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
-            <span className="text-cyber-muted">飞书</span>
-            <span className={`${feishuBound ? 'text-green-400' : feishuBound === false ? 'text-yellow-400' : 'text-cyber-muted'}`}>
+          <div className="text-xs flex items-center justify-between gap-3 p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
+            <span className="text-cyber-muted shrink-0">飞书</span>
+            <span className={`text-right break-words ${feishuBound ? 'text-green-400' : feishuBound === false ? 'text-yellow-400' : 'text-cyber-muted'}`}>
               {feishuBound ? '已绑定' : feishuBound === false ? '未绑定' : '未知'}
             </span>
           </div>
-          <div className="text-xs flex items-center justify-between p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
-            <span className="text-cyber-muted">Telegram</span>
-            <span className={`${telegramWebhookOk ? 'text-green-400' : telegramWebhookOk === false ? 'text-yellow-400' : 'text-cyber-muted'}`}>
+          <div className="text-xs flex items-center justify-between gap-3 p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
+            <span className="text-cyber-muted shrink-0">Telegram</span>
+            <span className={`text-right break-words ${telegramWebhookOk ? 'text-green-400' : telegramWebhookOk === false ? 'text-yellow-400' : 'text-cyber-muted'}`}>
               {telegramWebhookOk ? '已连接' : telegramWebhookOk === false ? '异常' : '未配置'}
             </span>
           </div>
@@ -285,9 +285,9 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
               ))}
             </select>
           </div>
-          <div className="text-xs flex items-center justify-between p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
-            <span className="text-cyber-muted">主刷新账户</span>
-            <span className="text-cyber-text truncate ml-3">{primaryRefreshAccount?.alias || primaryRefreshAccountId || '未设置'}</span>
+          <div className="text-xs flex items-start justify-between gap-3 p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
+            <span className="text-cyber-muted shrink-0">主刷新账户</span>
+            <span className="text-cyber-text text-right break-all">{primaryRefreshAccount?.alias || primaryRefreshAccountId || '未设置'}</span>
           </div>
           <button
             type="button"
