@@ -33,6 +33,8 @@ interface MonitorSubscription {
   planCode: string;
   datacenters: string[];
   autoOrder?: boolean;
+  accountId?: string;
+  accountLabel?: string;
 }
 
 interface VPSSubscription {
@@ -40,6 +42,8 @@ interface VPSSubscription {
   planCode: string;
   ovhSubsidiary: string;
   datacenters: string[];
+  accountId?: string;
+  accountLabel?: string;
 }
 
 const Dashboard = () => {
@@ -351,6 +355,7 @@ const Dashboard = () => {
                       <div key={`${sub.planCode}-${idx}`} className="p-3 bg-cyber-grid/10 rounded-lg border border-green-500/20">
                         <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
                         <div className="text-xs text-cyber-muted mt-1">机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
+                        <div className="text-xs text-cyber-muted mt-1">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
                         <div className="text-xs text-green-400 mt-1">自动下单：{sub.autoOrder ? '是' : '否'}</div>
                       </div>
                     ))}
@@ -372,6 +377,7 @@ const Dashboard = () => {
                         <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
                         <div className="text-xs text-cyber-muted mt-1">子公司：{sub.ovhSubsidiary}</div>
                         <div className="text-xs text-cyber-muted mt-1">机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
+                        <div className="text-xs text-cyber-muted mt-1">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
                       </div>
                     ))}
                   </div>

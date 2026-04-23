@@ -19,12 +19,16 @@ interface VPSSubscription {
   lastStatus: Record<string, any>;
   history?: HistoryEntry[];
   createdAt: string;
+  accountId?: string;
+  accountLabel?: string;
 }
 
 interface MonitorStatus {
   running: boolean;
   subscriptions_count: number;
   check_interval: number;
+  accountCount?: number;
+  runningAccountCount?: number;
 }
 
 interface HistoryEntry {
@@ -38,8 +42,9 @@ interface HistoryEntry {
 
 const VPSMonitorPage = () => {
   const isMobile = useIsMobile();
-  const { isAuthenticated } = useAPI();
+  const { isAuthenticated, accounts } = useAPI();
   const { showConfirm } = useToast();
+  const [scopeAll, setScopeAll] = useState(false);
   const [subscriptions, setSubscriptions] = useState<VPSSubscription[]>([]);
   const [monitorStatus, setMonitorStatus] = useState<MonitorStatus>({
     running: false,
@@ -73,6 +78,12 @@ const VPSMonitorPage = () => {
     notifyUnavailable: false
   });
 
+  const getAccountLabel = (id?: string) => {
+    if (!id) return '默认账户';
+    const acc = accounts.find((a: any) => a?.id === id);
+    return acc?.alias || id;
+  };
+
   // 加载订阅列表
   const loadSubscriptions = async (isRefresh = false) => {
     if (isRefresh) {
@@ -84,7 +95,7 @@ const VPSMonitorPage = () => {
       }, 150);
     }
     try {
-      const response = await api.get('/vps-monitor/subscriptions');
+      const response = await api.get('/vps-monitor/subscriptions', { params: { scope: scopeAll ? 'all' : undefined } });
       const newData = response.data;
       setSubscriptions(newData);
       prevSubscriptionsRef.current = newData;
@@ -112,7 +123,7 @@ const VPSMonitorPage = () => {
   // 加载监控状态
   const loadMonitorStatus = async () => {
     try {
-      const response = await api.get('/vps-monitor/status');
+      const response = await api.get('/vps-monitor/status', { params: { scope: scopeAll ? 'all' : undefined } });
       setMonitorStatus(response.data);
     } catch (error) {
       console.error('加载VPS监控状态失败:', error);
@@ -187,7 +198,7 @@ const VPSMonitorPage = () => {
   const handleClearAll = async () => {
     const confirmed = await showConfirm({
       title: '清空所有订阅',
-      message: '确定要清空所有VPS订阅吗？此操作不可撤销。',
+      message: scopeAll ? '确定要清空全部账户的 VPS 补货订阅吗？此操作不可撤销。' : '确定要清空当前账户的 VPS 补货订阅吗？此操作不可撤销。',
       confirmText: '确定清空',
       cancelText: '取消'
     });
@@ -197,8 +208,8 @@ const VPSMonitorPage = () => {
     }
     
     try {
-      const response = await api.delete('/vps-monitor/subscriptions/clear');
-      toast.success(`已清空 ${response.data.count} 个VPS订阅`);
+      const response = await api.delete('/vps-monitor/subscriptions/clear', { params: { scope: scopeAll ? 'all' : undefined } });
+      toast.success(scopeAll ? `已清空全部账户 VPS 订阅（共 ${response.data.count} 项，涉及 ${response.data.accountCount || 0} 个账户）` : `已清空 ${response.data.count} 个VPS订阅`);
       loadSubscriptions(true);
       loadMonitorStatus();
     } catch (error) {
@@ -270,7 +281,7 @@ const VPSMonitorPage = () => {
         }
       };
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, scopeAll]);
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -300,9 +311,9 @@ const VPSMonitorPage = () => {
               <h3 className={`${isMobile ? 'text-base' : 'text-lg'} font-semibold`}>VPS监控状态</h3>
               <p className="text-xs sm:text-sm text-cyber-muted">
                 {monitorStatus.running ? (
-                  <span className="text-green-400">● 运行中</span>
+                  <span className="text-green-400">● {scopeAll ? `${monitorStatus.runningAccountCount || 0} 个账户运行中` : '运行中'}</span>
                 ) : (
-                  <span className="text-gray-400">● 已停止</span>
+                  <span className="text-gray-400">● {scopeAll ? '全部账户已停止' : '已停止'}</span>
                 )}
               </p>
             </div>
@@ -350,7 +361,15 @@ const VPSMonitorPage = () => {
 
       {/* 订阅列表 */}
       <div className="cyber-panel p-4">
-        <div className="flex justify-between items-center mb-4">
+        <div className="flex flex-col gap-3 mb-4">
+          <div className="flex items-center justify-end">
+            <div className="relative inline-flex items-center bg-cyber-grid/10 border border-cyber-border rounded-full h-7 px-3" role="group" aria-label="查看范围切换">
+              <button className={`relative z-10 text-[11px] h-7 px-4 leading-none rounded-full transition-colors flex items-center ${!scopeAll ? 'text-cyber-bg' : 'text-cyber-text'}`} onClick={() => setScopeAll(false)} title="只看当前账户">当前账户</button>
+              <button className={`relative z-10 text-[11px] h-7 px-4 leading-none rounded-full transition-colors flex items-center ${scopeAll ? 'text-cyber-bg' : 'text-cyber-text'}`} onClick={() => setScopeAll(true)} title="查看全部账户">全部账户</button>
+              <span className={`absolute top-0.5 bottom-0.5 left-1 transition-all duration-200 rounded-full bg-cyber-accent ${scopeAll ? 'translate-x-[84px] w-[88px]' : 'translate-x-0 w-[88px]'}`} />
+            </div>
+          </div>
+          <div className="flex justify-between items-center">
           <h4 className="font-semibold flex items-center gap-2">
             <Server size={18} />
             VPS订阅列表
@@ -372,6 +391,7 @@ const VPSMonitorPage = () => {
               <Plus size={14} />
               添加订阅
             </button>
+          </div>
           </div>
         </div>
 
@@ -514,6 +534,7 @@ const VPSMonitorPage = () => {
                         ? `监控数据中心: ${sub.datacenters.join(', ')}`
                         : '监控所有数据中心'}
                     </p>
+                    <p className="text-xs text-cyber-muted mt-1">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</p>
                     <div className="flex gap-2 mt-2 flex-wrap">
                       {sub.notifyAvailable && (
                         <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded">

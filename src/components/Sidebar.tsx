@@ -13,11 +13,14 @@ interface SidebarProps {
 const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { isAuthenticated, accounts, currentAccountId, setCurrentAccount, logout } = useAPI();
+  const { isAuthenticated, accounts, currentAccountId, setCurrentAccount, logout, primaryRefreshAccountId, tgToken, tgChatId } = useAPI();
   const isMobile = useIsMobile();
-  const currentZone = (accounts.find((acc: any) => acc?.id === currentAccountId)?.zone) || '';
+  const currentAccount = accounts.find((acc: any) => acc?.id === currentAccountId);
+  const currentZone = currentAccount?.zone || '';
+  const primaryRefreshAccount = accounts.find((acc: any) => acc?.id === primaryRefreshAccountId);
   const [appVersion, setAppVersion] = useState<string>('-');
   const [feishuBound, setFeishuBound] = useState<boolean | null>(null);
+  const [telegramWebhookOk, setTelegramWebhookOk] = useState<boolean | null>(null);
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -48,6 +51,28 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
     })();
     return () => { mounted = false; };
   }, [currentAccountId]);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      if (!tgToken || !tgChatId) {
+        if (mounted) setTelegramWebhookOk(null);
+        return;
+      }
+      try {
+        const r = await api.get('/telegram/get-webhook-info');
+        const info = r.data?.webhook_info;
+        if (mounted) {
+          setTelegramWebhookOk(!!(r.data?.success && info?.url && !info?.last_error_date));
+        }
+      } catch {
+        if (mounted) {
+          setTelegramWebhookOk(false);
+        }
+      }
+    })();
+    return () => { mounted = false; };
+  }, [tgToken, tgChatId]);
   
   const menuItems = [
     { path: "/", icon: "bar-chart-2", label: "仪表盘" },
@@ -237,12 +262,19 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
             </div>
           </div>
           <div className="text-xs flex items-center justify-between p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
-            <span className="text-cyber-muted">飞书私聊</span>
+            <span className="text-cyber-muted">飞书</span>
             <span className={`${feishuBound ? 'text-green-400' : feishuBound === false ? 'text-yellow-400' : 'text-cyber-muted'}`}>
               {feishuBound ? '已绑定' : feishuBound === false ? '未绑定' : '未知'}
             </span>
           </div>
+          <div className="text-xs flex items-center justify-between p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
+            <span className="text-cyber-muted">Telegram</span>
+            <span className={`${telegramWebhookOk ? 'text-green-400' : telegramWebhookOk === false ? 'text-yellow-400' : 'text-cyber-muted'}`}>
+              {telegramWebhookOk ? '已连接' : telegramWebhookOk === false ? '异常' : '未配置'}
+            </span>
+          </div>
           <div>
+            <div className="text-[11px] text-cyber-muted mb-1">当前选择账户</div>
             <select
               className="w-full text-xs bg-cyber-bg/50 border border-cyber-accent/30 rounded px-2 py-1 text-cyber-text"
               value={currentAccountId || ''}
@@ -252,6 +284,10 @@ const Sidebar = ({ onToggle, isOpen }: SidebarProps) => {
                 <option key={acc.id} value={acc.id}>{acc.alias || acc.id}</option>
               ))}
             </select>
+          </div>
+          <div className="text-xs flex items-center justify-between p-2 rounded border border-cyber-accent/10 bg-cyber-bg/20">
+            <span className="text-cyber-muted">主刷新账户</span>
+            <span className="text-cyber-text truncate ml-3">{primaryRefreshAccount?.alias || primaryRefreshAccountId || '未设置'}</span>
           </div>
           <button
             type="button"

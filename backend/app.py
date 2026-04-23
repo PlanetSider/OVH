@@ -1048,6 +1048,103 @@ def get_vps_subscriptions_for_account(account_id):
     return [s for s in vps_subscriptions if (s.get('accountId') or 'default') == normalized_account_id]
 
 
+def list_effective_account_ids(include_default=False):
+    account_ids = list(accounts.keys())
+    if include_default or not account_ids:
+        if 'default' not in account_ids:
+            account_ids.append('default')
+    return account_ids
+
+
+def with_account_meta(item, account_id):
+    normalized_account_id = account_id or 'default'
+    result = dict(item or {})
+    result['accountId'] = normalized_account_id
+    result['accountLabel'] = get_account_label(normalized_account_id)
+    return result
+
+
+def list_monitor_subscriptions(scope='current', account_id=None):
+    if scope != 'all':
+        mon = get_monitor_for_account(account_id)
+        return [with_account_meta(sub, account_id) for sub in mon.subscriptions]
+
+    items = []
+    for aid in list_effective_account_ids(include_default=False):
+        mon = get_monitor_for_account(aid)
+        items.extend(with_account_meta(sub, aid) for sub in mon.subscriptions)
+    return items
+
+
+def get_monitor_status_payload(scope='current', account_id=None):
+    if scope != 'all':
+        mon = get_monitor_for_account(account_id)
+        status = dict(mon.get_status() or {})
+        status['accountId'] = account_id or 'default'
+        return status
+
+    account_ids = list_effective_account_ids(include_default=False)
+    statuses = []
+    for aid in account_ids:
+        mon = get_monitor_for_account(aid)
+        status = dict(mon.get_status() or {})
+        status['accountId'] = aid or 'default'
+        status['accountLabel'] = get_account_label(aid or 'default')
+        statuses.append(status)
+
+    return {
+        'running': any(bool(status.get('running')) for status in statuses),
+        'subscriptions_count': sum(int(status.get('subscriptions_count') or 0) for status in statuses),
+        'known_servers_count': sum(int(status.get('known_servers_count') or 0) for status in statuses),
+        'check_interval': min((int(status.get('check_interval') or 5) for status in statuses), default=5),
+        'accountCount': len(account_ids),
+        'runningAccountCount': sum(1 for status in statuses if status.get('running')),
+        'accounts': statuses,
+    }
+
+
+def list_vps_subscriptions(scope='current', account_id=None):
+    if scope != 'all':
+        return [with_account_meta(sub, account_id) for sub in get_vps_subscriptions_for_account(account_id)]
+
+    items = []
+    for aid in list_effective_account_ids(include_default=False):
+        items.extend(with_account_meta(sub, aid) for sub in get_vps_subscriptions_for_account(aid))
+    return items
+
+
+def get_vps_monitor_status_payload(scope='current', account_id=None):
+    if scope != 'all':
+        normalized_account_id = account_id or 'default'
+        return {
+            'running': is_vps_monitor_running_for_account(normalized_account_id),
+            'subscriptions_count': len(get_vps_subscriptions_for_account(normalized_account_id)),
+            'check_interval': vps_check_interval,
+            'accountId': normalized_account_id,
+        }
+
+    account_ids = list_effective_account_ids(include_default=False)
+    account_statuses = []
+    for aid in account_ids:
+        normalized_account_id = aid or 'default'
+        account_statuses.append({
+            'accountId': normalized_account_id,
+            'accountLabel': get_account_label(normalized_account_id),
+            'running': is_vps_monitor_running_for_account(normalized_account_id),
+            'subscriptions_count': len(get_vps_subscriptions_for_account(normalized_account_id)),
+            'check_interval': vps_check_interval,
+        })
+
+    return {
+        'running': any(bool(status.get('running')) for status in account_statuses),
+        'subscriptions_count': sum(int(status.get('subscriptions_count') or 0) for status in account_statuses),
+        'check_interval': vps_check_interval,
+        'accountCount': len(account_ids),
+        'runningAccountCount': sum(1 for status in account_statuses if status.get('running')),
+        'accounts': account_statuses,
+    }
+
+
 def get_vps_monitor_state(account_id):
     normalized_account_id = account_id or 'default'
     with vps_monitor_lock:
@@ -5484,8 +5581,8 @@ def clear_purchase_history():
 @app.route('/api/monitor/subscriptions', methods=['GET'])
 def get_subscriptions():
     account_id = get_account_id_from_request()
-    mon = get_monitor_for_account(account_id)
-    return jsonify(mon.subscriptions)
+    scope = (request.args.get('scope') or '').lower()
+    return jsonify(list_monitor_subscriptions(scope='all' if scope == 'all' else 'current', account_id=account_id))
 
 @app.route('/api/monitor/subscriptions', methods=['POST'])
 def add_subscription():
@@ -5620,6 +5717,19 @@ def remove_subscription(plan_code):
 @app.route('/api/monitor/subscriptions/clear', methods=['DELETE'])
 def clear_subscriptions():
     account_id = get_account_id_from_request()
+    scope = (request.args.get('scope') or '').lower()
+    if scope == 'all':
+        total_count = 0
+        account_count = 0
+        for aid in list_effective_account_ids(include_default=False):
+            mon = get_monitor_for_account(aid)
+            count = mon.clear_subscriptions()
+            save_subscriptions(aid)
+            if count > 0:
+                total_count += count
+                account_count += 1
+        add_log("INFO", f"清空全部账户服务器订阅: {total_count} 项 / {account_count} 个账户")
+        return jsonify({"status": "success", "count": total_count, "accountCount": account_count, "message": f"已清空 {account_count} 个账户的 {total_count} 个订阅"})
     mon = get_monitor_for_account(account_id)
     count = mon.clear_subscriptions()
     save_subscriptions(account_id)
@@ -5673,9 +5783,8 @@ def stop_monitor():
 @app.route('/api/monitor/status', methods=['GET'])
 def get_monitor_status():
     account_id = get_account_id_from_request()
-    mon = get_monitor_for_account(account_id)
-    status = mon.get_status()
-    return jsonify(status)
+    scope = (request.args.get('scope') or '').lower()
+    return jsonify(get_monitor_status_payload(scope='all' if scope == 'all' else 'current', account_id=account_id))
 
 @app.route('/api/monitor/interval', methods=['PUT'])
 def set_monitor_interval():
@@ -11969,7 +12078,8 @@ def vps_monitor_loop(account_id):
 def get_vps_subscriptions():
     """获取VPS订阅列表"""
     account_id = get_vps_account_id_from_request()
-    return jsonify(get_vps_subscriptions_for_account(account_id))
+    scope = (request.args.get('scope') or '').lower()
+    return jsonify(list_vps_subscriptions(scope='all' if scope == 'all' else 'current', account_id=account_id))
 
 @app.route('/api/vps-monitor/subscriptions', methods=['POST'])
 def add_vps_subscription():
@@ -12047,6 +12157,22 @@ def clear_vps_subscriptions():
     """清空所有VPS订阅"""
     global vps_subscriptions
     account_id = get_vps_account_id_from_request()
+    scope = (request.args.get('scope') or '').lower()
+    if scope == 'all':
+        target_account_ids = list_effective_account_ids(include_default=False)
+        target_items = []
+        for aid in target_account_ids:
+            target_items.extend(get_vps_subscriptions_for_account(aid))
+        count = len(target_items)
+        account_count = len({(item.get('accountId') or 'default') for item in target_items})
+        target_set = {(item.get('id'), item.get('accountId') or 'default') for item in target_items}
+        vps_subscriptions = [s for s in vps_subscriptions if (s.get('id'), s.get('accountId') or 'default') not in target_set]
+        save_vps_subscriptions()
+        for aid in target_account_ids:
+            if is_vps_monitor_running_for_account(aid) and len(get_vps_subscriptions_for_account(aid)) == 0:
+                stop_vps_monitor_for_account(aid)
+        add_log("INFO", f"清空全部账户VPS订阅: {count} 项 / {account_count} 个账户", "vps_monitor")
+        return jsonify({"status": "success", "count": count, "accountCount": account_count, "message": f"已清空 {account_count} 个账户的 {count} 个VPS订阅"})
     
     target_items = get_vps_subscriptions_for_account(account_id)
     count = len(target_items)
@@ -12109,13 +12235,8 @@ def stop_vps_monitor():
 def get_vps_monitor_status():
     """获取VPS监控状态"""
     account_id = get_vps_account_id_from_request()
-    status = {
-        'running': is_vps_monitor_running_for_account(account_id),
-        'subscriptions_count': len(get_vps_subscriptions_for_account(account_id)),
-        'check_interval': vps_check_interval,
-        'accountId': account_id,
-    }
-    return jsonify(status)
+    scope = (request.args.get('scope') or '').lower()
+    return jsonify(get_vps_monitor_status_payload(scope='all' if scope == 'all' else 'current', account_id=account_id))
 
 @app.route('/api/vps-monitor/interval', methods=['PUT'])
 def set_vps_monitor_interval():
