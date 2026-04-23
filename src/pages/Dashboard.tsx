@@ -58,6 +58,7 @@ const Dashboard = () => {
   const [vpsSubscriptions, setVpsSubscriptions] = useState<VPSSubscription[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const fallbackToastShownRef = useRef(false);
+  const hasAnyTask = queueItems.length > 0 || monitorSubscriptions.length > 0 || vpsSubscriptions.length > 0;
 
   const getAccountLabel = (id?: string) => {
     if (!id) return '默认账户';
@@ -293,7 +294,7 @@ const Dashboard = () => {
                 <div key={i} className="h-20 bg-cyber-grid/50 animate-pulse rounded-lg"></div>
               ))}
             </div>
-          ) : stats.activeQueues === 0 ? (
+          ) : !hasAnyTask ? (
             <div className="bg-cyber-grid/10 p-8 rounded-lg text-center border border-cyber-grid/30">
               <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyber-muted/50 mx-auto mb-4">
                 <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
@@ -412,9 +413,16 @@ const Dashboard = () => {
             </div>
             <div className="flex justify-between items-center p-3 rounded-lg bg-cyber-grid/5 hover:bg-cyber-grid/10 transition-colors">
               <span className="text-cyber-text text-sm font-medium">服务器监控</span>
-              <span className={`flex items-center text-sm font-semibold ${stats.monitorRunning ? 'text-green-400' : 'text-cyber-muted'}`}>
-                <span className={`w-2.5 h-2.5 rounded-full mr-2 ${stats.monitorRunning ? 'bg-green-400 animate-pulse shadow-lg shadow-green-400/50' : 'bg-cyber-muted'}`}></span>
-                {stats.monitorRunning ? '运行中' : '待启用'}
+              <span className={`flex items-center text-sm font-semibold ${monitorSubscriptions.length > 0 ? 'text-green-400' : 'text-cyber-muted'}`}>
+                <span className={`w-2.5 h-2.5 rounded-full mr-2 ${monitorSubscriptions.length > 0 ? 'bg-green-400 animate-pulse shadow-lg shadow-green-400/50' : 'bg-cyber-muted'}`}></span>
+                {monitorSubscriptions.length > 0 ? `${monitorSubscriptions.length} 个任务` : '暂无任务'}
+              </span>
+            </div>
+            <div className="flex justify-between items-center p-3 rounded-lg bg-cyber-grid/5 hover:bg-cyber-grid/10 transition-colors">
+              <span className="text-cyber-text text-sm font-medium">VPS补货通知</span>
+              <span className={`flex items-center text-sm font-semibold ${vpsSubscriptions.length > 0 ? 'text-green-400' : 'text-cyber-muted'}`}>
+                <span className={`w-2.5 h-2.5 rounded-full mr-2 ${vpsSubscriptions.length > 0 ? 'bg-green-400 animate-pulse shadow-lg shadow-green-400/50' : 'bg-cyber-muted'}`}></span>
+                {vpsSubscriptions.length > 0 ? `${vpsSubscriptions.length} 个任务` : '暂无任务'}
               </span>
             </div>
             <div className="flex justify-between items-center p-3 rounded-lg bg-cyber-grid/5 mt-4 border-t border-cyber-grid/30 pt-4">
