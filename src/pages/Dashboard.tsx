@@ -27,11 +27,22 @@ interface QueueItem {
   retryInterval: number;
   createdAt: string;
   accountId?: string;
+  quantity?: number;
+}
+
+interface ServerPlan {
+  planCode: string;
+  name: string;
+  memory: string;
+  storage: string;
 }
 
 interface MonitorSubscription {
   planCode: string;
+  serverName?: string;
   datacenters: string[];
+  notifyAvailable?: boolean;
+  notifyUnavailable?: boolean;
   autoOrder?: boolean;
   accountId?: string;
   accountLabel?: string;
@@ -60,6 +71,7 @@ const Dashboard = () => {
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [monitorSubscriptions, setMonitorSubscriptions] = useState<MonitorSubscription[]>([]);
   const [vpsSubscriptions, setVpsSubscriptions] = useState<VPSSubscription[]>([]);
+  const [servers, setServers] = useState<ServerPlan[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const fallbackToastShownRef = useRef(false);
   const hasAnyTask = queueItems.length > 0 || monitorSubscriptions.length > 0 || vpsSubscriptions.length > 0;
@@ -70,14 +82,30 @@ const Dashboard = () => {
     return acc?.alias || id;
   };
 
+  const getServerMeta = (planCode: string) => {
+    return servers.find((server) => server.planCode === planCode);
+  };
+
+  const getQueueStatusLabel = (status: string) => {
+    if (status === 'paused') return '暂停';
+    return '运行';
+  };
+
+  const getMonitorNotifyLabel = (sub: MonitorSubscription) => {
+    if (sub.notifyAvailable && sub.notifyUnavailable) return '有货/无货提醒';
+    if (sub.notifyUnavailable) return '无货时提醒';
+    return '有货时提醒';
+  };
+
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [statsResponse, queueResponse, monitorResponse, vpsResponse] = await Promise.all([
+        const [statsResponse, queueResponse, monitorResponse, vpsResponse, serversResponse] = await Promise.all([
           api.get(`/stats`),
           api.get(`/queue/all`),
           api.get('/monitor/subscriptions'),
-          api.get('/vps-monitor/subscriptions')
+          api.get('/vps-monitor/subscriptions'),
+          api.get('/servers', { params: { showApiServers: false, forceRefresh: false } })
         ]);
         setStats(statsResponse.data);
         // 如果服务器总数为0（缓存为空），提示一次后台将从OVH更新
@@ -92,6 +120,7 @@ const Dashboard = () => {
         setQueueItems(activeItems);
         setMonitorSubscriptions((monitorResponse.data || []).slice(0, 3));
         setVpsSubscriptions((vpsResponse.data || []).slice(0, 3));
+        setServers(serversResponse.data?.servers || serversResponse.data || []);
       } catch (error) {
         console.error("Error fetching data:", error);
       } finally {
@@ -330,12 +359,26 @@ const Dashboard = () => {
                 ) : (
                   <div className="space-y-2">
                     {queueItems.map((item) => (
-                      <div key={item.id} className="p-3 bg-cyber-grid/10 rounded-lg border border-cyber-accent/20 flex justify-between items-center gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium text-cyber-text truncate">{item.planCode}</div>
-                          <div className="text-xs text-cyber-muted mt-1">机房：{(item.datacenters && item.datacenters.length > 0 ? item.datacenters : (item.datacenter ? [item.datacenter] : ['全部'])).map(dc => dc.toUpperCase()).join(' > ')}</div>
+                      <div key={item.id} className="p-3 bg-cyber-grid/10 rounded-lg border border-cyber-accent/20">
+                        <div className="min-w-0 flex-1 space-y-1.5 text-xs text-cyber-muted">
+                          <div className="grid grid-cols-3 gap-3 items-center">
+                            <div className="font-medium text-cyber-text truncate">{item.planCode}</div>
+                            <div className="text-center text-cyber-accent truncate">状态：{getQueueStatusLabel(item.status)}</div>
+                            <div className="font-medium text-cyber-text truncate text-right">{getServerMeta(item.planCode)?.name || '-'}</div>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div>机房：{(item.datacenters && item.datacenters.length > 0 ? item.datacenters : (item.datacenter ? [item.datacenter] : ['全部'])).map(dc => dc.toUpperCase()).join(' > ')}</div>
+                            <div>账户：{getAccountLabel(item.accountId)}</div>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div>内存：{getServerMeta(item.planCode)?.memory || '-'}</div>
+                            <div>硬盘：{getServerMeta(item.planCode)?.storage || '-'}</div>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div>数量：{item.quantity || 1}</div>
+                            <div>重试间隔：{item.retryInterval || 0} 秒</div>
+                          </div>
                         </div>
-                        <div className="text-xs text-cyber-muted">{getAccountLabel(item.accountId)}</div>
                       </div>
                     ))}
                   </div>
@@ -353,10 +396,20 @@ const Dashboard = () => {
                   <div className="space-y-2">
                     {monitorSubscriptions.map((sub, idx) => (
                       <div key={`${sub.planCode}-${idx}`} className="p-3 bg-cyber-grid/10 rounded-lg border border-green-500/20">
-                        <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
-                        <div className="text-xs text-cyber-muted mt-1">机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
-                        <div className="text-xs text-cyber-muted mt-1">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
-                        <div className="text-xs text-green-400 mt-1">自动下单：{sub.autoOrder ? '是' : '否'}</div>
+                        <div className="space-y-1.5 text-xs text-cyber-muted">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
+                            <div className="text-xs font-medium text-cyber-text truncate text-right">{sub.serverName || getServerMeta(sub.planCode)?.name || '-'}</div>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div>机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
+                            <div>账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-green-400">自动下单：{sub.autoOrder ? '是' : '否'}</div>
+                            <div>{getMonitorNotifyLabel(sub)}</div>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -374,10 +427,16 @@ const Dashboard = () => {
                   <div className="space-y-2">
                     {vpsSubscriptions.map((sub) => (
                       <div key={sub.id} className="p-3 bg-cyber-grid/10 rounded-lg border border-blue-500/20">
-                        <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
-                        <div className="text-xs text-cyber-muted mt-1">子公司：{sub.ovhSubsidiary}</div>
-                        <div className="text-xs text-cyber-muted mt-1">机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
-                        <div className="text-xs text-cyber-muted mt-1">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
+                        <div className="space-y-1.5 text-xs text-cyber-muted">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-medium text-cyber-text truncate">{sub.planCode}</div>
+                            <div>{sub.ovhSubsidiary}</div>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div>机房：{(sub.datacenters && sub.datacenters.length > 0 ? sub.datacenters : ['全部']).map(dc => dc.toUpperCase()).join(', ')}</div>
+                            <div>账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</div>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
