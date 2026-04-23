@@ -517,49 +517,57 @@ const VPSMonitorPage = () => {
                 key={sub.id}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="bg-cyber-grid/10 rounded border border-cyber-accent/20 hover:border-cyber-accent/40 transition-colors overflow-hidden"
+                className="bg-cyber-surface p-4 rounded-lg shadow-md border border-cyber-border"
               >
-                <div className="flex justify-between items-start p-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <p className="font-medium text-cyber-accent">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div className="flex-grow min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="px-1.5 py-0.5 text-[10px] font-mono rounded-md bg-cyber-grid/10 text-cyber-text border border-cyber-accent/30">
                         {vpsModels.find(m => m.value === sub.planCode)?.label || sub.planCode}
-                      </p>
-                      <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded">
+                      </span>
+                      <span className="px-1.5 py-0.5 text-[10px] font-mono rounded-md bg-cyber-grid/10 text-cyber-text border border-cyber-accent/30">
                         {sub.ovhSubsidiary}
                       </span>
+                      <span className="px-1.5 py-0.5 text-[10px] font-mono rounded-md bg-cyber-grid/10 text-cyber-text border border-cyber-accent/30">
+                        {sub.datacenters.length > 0 ? sub.datacenters.join(' › ') : '全部机房'}
+                      </span>
+                      <span className="px-1.5 py-0.5 text-[10px] font-mono rounded-md bg-cyber-grid/10 text-cyber-text border border-cyber-accent/30">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</span>
                     </div>
                     <p className="text-xs text-cyber-muted mt-1">
                       {sub.datacenters.length > 0 
                         ? `监控数据中心: ${sub.datacenters.join(', ')}`
                         : '监控所有数据中心'}
                     </p>
-                    <p className="text-xs text-cyber-muted mt-1">账户：{sub.accountLabel || getAccountLabel(sub.accountId)}</p>
-                    <div className="flex gap-2 mt-2 flex-wrap">
+                    <div className="flex items-center gap-2 mt-2 flex-wrap">
                       {sub.notifyAvailable && (
-                        <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded">
+                        <span className="text-xs px-2 py-1 rounded-full font-medium bg-green-500/20 text-green-400">
                           有货提醒
                         </span>
                       )}
                       {sub.notifyUnavailable && (
-                        <span className="text-xs px-2 py-0.5 bg-orange-500/20 text-orange-400 rounded">
+                        <span className="text-xs px-2 py-1 rounded-full font-medium bg-orange-500/20 text-orange-400">
                           无货提醒
+                        </span>
+                      )}
+                      {!sub.notifyAvailable && !sub.notifyUnavailable && (
+                        <span className="text-xs px-2 py-1 rounded-full font-medium bg-cyber-grid/20 text-cyber-muted">
+                          仅监控
                         </span>
                       )}
                     </div>
                   </div>
                   
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2 mt-2 sm:mt-0 flex-shrink-0 self-end sm:self-auto">
                     <button
                       onClick={() => toggleHistory(sub.id)}
-                      className="p-2 text-cyber-accent hover:bg-cyber-accent/10 rounded transition-colors"
+                      className="p-1.5 hover:bg-cyber-hover rounded text-cyber-secondary hover:text-cyber-primary transition-colors"
                       title="查看历史记录"
                     >
                       {expandedHistory === sub.id ? <ChevronUp size={16} /> : <History size={16} />}
                     </button>
                     <button
                       onClick={() => handleRemoveSubscription(sub.id, sub.planCode)}
-                      className="p-2 text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                      className="p-1.5 hover:bg-cyber-hover rounded text-cyber-secondary hover:text-red-500 transition-colors"
                       title="删除订阅"
                     >
                       <Trash2 size={16} />

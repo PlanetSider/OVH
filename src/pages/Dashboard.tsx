@@ -317,12 +317,6 @@ const Dashboard = () => {
         >
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-lg font-bold text-cyber-text">活跃队列</h2>
-            <Link 
-              to="/queue" 
-              className="text-cyber-muted text-xs hover:text-cyber-accent transition-colors"
-            >
-              查看全部
-            </Link>
           </div>
 
           {isLoading ? (

@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from feishu_utils import FeishuClient
 from sqlite_storage import SQLiteStorage
 
-APP_VERSION = "v2.0.5"
+APP_VERSION = "v3.0.0"
 # 加载 .env 文件
 load_dotenv()
 

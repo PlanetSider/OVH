@@ -97,6 +97,11 @@ const APIAccountsPage = () => {
   };
 
   const deleteAccount = async (id: string) => {
+    const target = accounts.find((acc: any) => acc?.id === id);
+    const label = target?.alias || target?.email || id;
+    const confirmed = window.confirm(`确定要删除 API 账户“${label}”吗？此操作不可撤销。`);
+    if (!confirmed) return;
+
     try {
       const res = await api.delete(`/accounts/${id}`);
       if (res.data?.success) {
@@ -238,7 +243,7 @@ const APIAccountsPage = () => {
 
         <div>
           <div className="cyber-panel p-6 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <h2 className="text-lg font-bold">账户列表</h2>
               <div className="flex items-center gap-2">
                 <label className="text-xs text-cyber-muted">当前账户</label>
@@ -261,10 +266,11 @@ const APIAccountsPage = () => {
             )}
             <div className="space-y-2">
               {accounts.map((acc: any) => (
-                <div key={acc.id} className="flex items-center justify-between p-2 rounded border border-cyber-accent/30 bg-cyber-bg/30">
-                  <div className="text-sm">
-                    <div className="font-medium flex items-center gap-2">
-                      <span>{acc.alias || acc.id}</span>
+                <div key={acc.id} className="p-3 rounded border border-cyber-accent/30 bg-cyber-bg/30 space-y-3">
+                  <div className="text-sm space-y-1">
+                    <div className="font-medium break-all">{acc.alias || acc.id}</div>
+                    <div className="text-cyber-muted break-all">{acc.email || acc.id}</div>
+                    <div>
                       {(() => {
                         const hasCreds = !!(acc.appKey && acc.appSecret && acc.consumerKey);
                         if (!hasCreds) {
@@ -277,9 +283,9 @@ const APIAccountsPage = () => {
                           : <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-400" title={st.error || ''}>未连接</span>;
                       })()}
                     </div>
-                    <div className="text-cyber-muted">{acc.endpoint} · {acc.zone}</div>
+                    <div className="text-cyber-muted break-all">{acc.endpoint} · {acc.zone}</div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <button className="cyber-button" onClick={() => setCurrentAccount(acc.id)}>切换</button>
                     <button className="cyber-button" onClick={() => fillFromAccount(acc)}>编辑</button>
                     <button className="cyber-button" onClick={() => deleteAccount(acc.id)}>删除</button>
