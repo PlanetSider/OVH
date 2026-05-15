@@ -27,6 +27,8 @@ const SettingsPage = () => {
     availabilityAutoRefreshIntervalSeconds,
     serversNewServerNotifyEnabled,
     availabilityNewServerNotifyEnabled,
+    availabilityNotifyGroupByModel,
+    availabilityNotifyGroupByConfig,
     primaryRefreshAccountId,
     serverInventoryRefreshEnabled,
     serverInventoryRefreshIntervalSeconds,
@@ -50,6 +52,8 @@ const SettingsPage = () => {
     availabilityAutoRefreshIntervalSeconds: 3600,
     serversNewServerNotifyEnabled: false,
     availabilityNewServerNotifyEnabled: false,
+    availabilityNotifyGroupByModel: true,
+    availabilityNotifyGroupByConfig: false,
     primaryRefreshAccountId: "",
     serverInventoryRefreshEnabled: false,
     serverInventoryRefreshIntervalSeconds: 3600,
@@ -92,11 +96,13 @@ const SettingsPage = () => {
       availabilityAutoRefreshIntervalSeconds: availabilityAutoRefreshIntervalSeconds || 3600,
       serversNewServerNotifyEnabled: !!serversNewServerNotifyEnabled,
       availabilityNewServerNotifyEnabled: !!availabilityNewServerNotifyEnabled,
+      availabilityNotifyGroupByModel: availabilityNotifyGroupByModel !== false,
+      availabilityNotifyGroupByConfig: !!availabilityNotifyGroupByConfig,
       primaryRefreshAccountId: primaryRefreshAccountId || "",
       serverInventoryRefreshEnabled: !!serverInventoryRefreshEnabled,
       serverInventoryRefreshIntervalSeconds: serverInventoryRefreshIntervalSeconds || 3600
     }));
-  }, [tgToken, tgChatId, feishuEnabled, feishuAppId, feishuAppSecret, feishuVerificationToken, feishuEncryptKey, serversAutoRefreshEnabled, serversAutoRefreshIntervalSeconds, availabilityAutoRefreshEnabled, availabilityAutoRefreshIntervalSeconds, serversNewServerNotifyEnabled, availabilityNewServerNotifyEnabled, primaryRefreshAccountId, serverInventoryRefreshEnabled, serverInventoryRefreshIntervalSeconds]);
+  }, [tgToken, tgChatId, feishuEnabled, feishuAppId, feishuAppSecret, feishuVerificationToken, feishuEncryptKey, serversAutoRefreshEnabled, serversAutoRefreshIntervalSeconds, availabilityAutoRefreshEnabled, availabilityAutoRefreshIntervalSeconds, serversNewServerNotifyEnabled, availabilityNewServerNotifyEnabled, availabilityNotifyGroupByModel, availabilityNotifyGroupByConfig, primaryRefreshAccountId, serverInventoryRefreshEnabled, serverInventoryRefreshIntervalSeconds]);
 
   // 加载后端设置中的 SSH 公钥
   useEffect(() => {
@@ -120,6 +126,8 @@ const SettingsPage = () => {
           availabilityAutoRefreshIntervalSeconds: Number(cfg.availabilityAutoRefreshIntervalSeconds || prev.availabilityAutoRefreshIntervalSeconds || 3600),
           serversNewServerNotifyEnabled: !!cfg.serversNewServerNotifyEnabled,
           availabilityNewServerNotifyEnabled: !!cfg.availabilityNewServerNotifyEnabled,
+          availabilityNotifyGroupByModel: cfg.availabilityNotifyGroupByModel !== false,
+          availabilityNotifyGroupByConfig: !!cfg.availabilityNotifyGroupByConfig,
           primaryRefreshAccountId: cfg.primaryRefreshAccountId || prev.primaryRefreshAccountId || "",
           serverInventoryRefreshEnabled: !!cfg.serverInventoryRefreshEnabled,
           serverInventoryRefreshIntervalSeconds: Number(cfg.serverInventoryRefreshIntervalSeconds || prev.serverInventoryRefreshIntervalSeconds || 3600)
@@ -376,6 +384,8 @@ const SettingsPage = () => {
           availabilityAutoRefreshIntervalSeconds: Number(formValues.availabilityAutoRefreshIntervalSeconds || 3600),
           serversNewServerNotifyEnabled: formValues.serversNewServerNotifyEnabled,
           availabilityNewServerNotifyEnabled: formValues.availabilityNewServerNotifyEnabled,
+          availabilityNotifyGroupByModel: formValues.availabilityNotifyGroupByModel,
+          availabilityNotifyGroupByConfig: formValues.availabilityNotifyGroupByConfig,
           primaryRefreshAccountId: formValues.primaryRefreshAccountId || undefined,
           serverInventoryRefreshEnabled: formValues.serverInventoryRefreshEnabled,
           serverInventoryRefreshIntervalSeconds: Number(formValues.serverInventoryRefreshIntervalSeconds || 3600),
@@ -920,6 +930,38 @@ const SettingsPage = () => {
                   <input type="checkbox" name="availabilityNewServerNotifyEnabled" checked={formValues.availabilityNewServerNotifyEnabled} onChange={handleChange} className="form-checkbox cyber-input h-4 w-4" />
                   启用实时可用性新增服务器通知
                 </label>
+                <div className="pl-6 space-y-3 border-l border-cyber-accent/20">
+                  <label className="flex items-center gap-2 text-sm text-cyber-text">
+                    <input
+                      type="checkbox"
+                      checked={formValues.availabilityNotifyGroupByModel}
+                      onChange={(e) => setFormValues(prev => ({
+                        ...prev,
+                        availabilityNotifyGroupByModel: e.target.checked,
+                        availabilityNotifyGroupByConfig: e.target.checked ? false : (prev.availabilityNotifyGroupByConfig || true)
+                      }))}
+                      className="form-checkbox cyber-input h-4 w-4"
+                    />
+                    按型号聚合通知
+                  </label>
+                  <p className="text-xs text-cyber-muted -mt-1">默认开启。新增同型号服务器只发送 1 条交互式卡片，按“内存 → 硬盘 → 机房”逐步选择。</p>
+
+                  <label className="flex items-center gap-2 text-sm text-cyber-text">
+                    <input
+                      type="checkbox"
+                      checked={formValues.availabilityNotifyGroupByConfig}
+                      onChange={(e) => setFormValues(prev => ({
+                        ...prev,
+                        availabilityNotifyGroupByConfig: e.target.checked,
+                        availabilityNotifyGroupByModel: e.target.checked ? false : (prev.availabilityNotifyGroupByModel || true)
+                      }))}
+                      className="form-checkbox cyber-input h-4 w-4"
+                    />
+                    按配置聚合通知
+                  </label>
+                  <p className="text-xs text-cyber-muted -mt-1">每个内存/硬盘组合分别发送通知，机房仍在同条交互内选择。</p>
+                  <p className="text-xs text-cyber-muted">两种模式互斥；默认推荐“按型号聚合”，可以显著减少刷屏。</p>
+                </div>
 
                 <div className="pt-2 border-t border-cyber-accent/20">
                   <label className="flex items-center gap-2 text-sm text-cyber-text">

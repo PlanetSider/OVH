@@ -117,6 +117,8 @@ config = {
     "availabilityAutoRefreshIntervalSeconds": 3600,
     "serversNewServerNotifyEnabled": False,
     "availabilityNewServerNotifyEnabled": False,
+    "availabilityNotifyGroupByModel": True,
+    "availabilityNotifyGroupByConfig": False,
     "primaryRefreshAccountId": "",
     "serverInventoryRefreshEnabled": False,
     "serverInventoryRefreshIntervalSeconds": 3600,
@@ -2146,6 +2148,73 @@ def build_new_availability_server_message(item, account_id=None):
     )
 
 
+def group_availability_items_by_model(items):
+    grouped = {}
+    for item in items or []:
+        plan_code = item.get('planCode')
+        if not plan_code:
+            continue
+        entry = grouped.setdefault(plan_code, {
+            'planCode': plan_code,
+            'server': item.get('server', plan_code),
+            'accountId': item.get('accountId'),
+            'memories': [],
+            'storagesByMemory': {},
+            'datacentersByMemoryStorage': {},
+            'rawItems': []
+        })
+        memory = item.get('memory', 'N/A')
+        storage = item.get('storage', 'N/A')
+        datacenters = sorted(list(set(item.get('datacenters') or [])))
+        if memory not in entry['memories']:
+            entry['memories'].append(memory)
+        entry['storagesByMemory'].setdefault(memory, [])
+        if storage not in entry['storagesByMemory'][memory]:
+            entry['storagesByMemory'][memory].append(storage)
+        storage_key = f"{memory}|||{storage}"
+        existing_dcs = entry['datacentersByMemoryStorage'].setdefault(storage_key, [])
+        for dc in datacenters:
+            if dc not in existing_dcs:
+                existing_dcs.append(dc)
+        entry['rawItems'].append(item)
+    return list(grouped.values())
+
+
+def build_new_availability_group_message(group, account_id=None):
+    memories = group.get('memories') or []
+    storage_values = []
+    for values in (group.get('storagesByMemory') or {}).values():
+        for value in values:
+            if value not in storage_values:
+                storage_values.append(value)
+    datacenters = []
+    for dc_list in (group.get('datacentersByMemoryStorage') or {}).values():
+        for dc in dc_list:
+            if dc not in datacenters:
+                datacenters.append(dc)
+    account_line = f"账户: {get_account_label(account_id)}\n" if account_id else ""
+    return (
+        "🆕 实时可用性发现新增服务器\n\n"
+        f"{account_line}"
+        f"名称: {group.get('server', '未知服务器')}\n"
+        f"型号: {group.get('planCode', 'N/A')}\n"
+        f"内存选项: {', '.join(memories) or '无'}\n"
+        f"硬盘选项: {', '.join(storage_values) or '无'}\n"
+        f"可用机房: {', '.join([dc.upper() for dc in datacenters]) or '无'}\n"
+        f"配置组合: {len(group.get('rawItems') or [])} 个"
+    )
+
+
+def build_new_availability_group_feishu_card(group, message_uuid: str, account_id=None):
+    memory_options = group.get('memories') or ['N/A']
+    buttons = build_new_server_memory_buttons('feishu', message_uuid, memory_options)
+    return build_feishu_order_card(
+        '实时可用性新增服务器',
+        build_new_availability_group_message(group, account_id),
+        buttons
+    )
+
+
 def build_new_availability_feishu_card(item, message_uuid: str, account_id=None):
     memory_options = [item.get('memory', 'N/A')]
     buttons = build_new_server_memory_buttons('feishu', message_uuid, memory_options)
@@ -2507,6 +2576,19 @@ def build_new_server_memory_buttons(channel: str, message_uuid: str, options: li
     return buttons
 
 
+def build_storage_options_for_memory(group_ctx, selected_memory):
+    if not isinstance(group_ctx, dict):
+        return []
+    return list((group_ctx.get('storagesByMemory') or {}).get(selected_memory, []))
+
+
+def build_datacenter_options_for_memory_storage(group_ctx, selected_memory, selected_storage):
+    if not isinstance(group_ctx, dict):
+        return []
+    key = f"{selected_memory}|||{selected_storage}"
+    return list((group_ctx.get('datacentersByMemoryStorage') or {}).get(key, []))
+
+
 def run_servers_auto_refresh_once():
     global server_plans
     account_ids = get_auto_refresh_account_ids()
@@ -2589,41 +2671,91 @@ def run_availability_auto_refresh_once():
     new_items = diff_new_items(previous_items, current_items)
     save_availability_snapshot_data(current_items)
     if config.get('availabilityNewServerNotifyEnabled') and (not is_initial_snapshot):
-        for item in new_items:
-            message_uuid = str(uuid.uuid4())
-            account_id = preferred_account_id
-            monitor_obj = get_monitor_for_account(account_id)
-            memory_options = [item.get('memory', 'N/A')]
-            storage_options = [item.get('storage', 'N/A')]
-            hardware_options = recover_new_server_options(item.get('planCode'), item.get('memory'), item.get('storage'), account_id)
-            if hasattr(monitor_obj, 'message_uuid_cache'):
-                monitor_obj.message_uuid_cache[message_uuid] = {
-                    'type': 'new_server_discovery',
-                    'source': 'availability',
-                    'accountId': account_id,
-                    'planCode': item.get('planCode'),
-                    'serverName': item.get('server'),
-                    'options': hardware_options,
-                    'memoryOptions': memory_options,
-                    'storageOptions': storage_options,
-                    'datacenterOptions': item.get('datacenters') or [],
-                    'selectedMemory': None,
-                    'selectedStorage': None,
-                    'selectedDatacenter': None,
-                    'selectedAction': None,
-                    'selectedQuantity': None,
-                    'selectedAutoPay': None,
-                    'selectedRetryInterval': None,
-                    'timestamp': time.time()
-                }
-            tg_buttons = build_new_server_memory_buttons('telegram', message_uuid, memory_options)
-            feishu_card = build_new_availability_feishu_card(item, message_uuid, account_id)
-            send_bot_message(
-                build_new_availability_server_message(item, account_id),
-                reply_markup=build_tg_inline_keyboard(tg_buttons, row_size=2),
-                account_id=account_id,
-                feishu_card=feishu_card
-            )
+        account_id = preferred_account_id
+        if config.get('availabilityNotifyGroupByModel', True):
+            grouped_items = group_availability_items_by_model([{**item, 'accountId': account_id} for item in new_items])
+            for group in grouped_items:
+                message_uuid = str(uuid.uuid4())
+                monitor_obj = get_monitor_for_account(account_id)
+                selected_memory = (group.get('memories') or [None])[0]
+                storage_options = build_storage_options_for_memory(group, selected_memory) if selected_memory else []
+                selected_storage = storage_options[0] if storage_options else None
+                datacenter_options = build_datacenter_options_for_memory_storage(group, selected_memory, selected_storage) if selected_memory and selected_storage else []
+                first_item = (group.get('rawItems') or [{}])[0]
+                hardware_options = recover_new_server_options(
+                    group.get('planCode'),
+                    selected_memory,
+                    selected_storage,
+                    account_id
+                ) if selected_memory and selected_storage else []
+                if hasattr(monitor_obj, 'message_uuid_cache'):
+                    monitor_obj.message_uuid_cache[message_uuid] = {
+                        'type': 'new_server_discovery',
+                        'source': 'availability',
+                        'groupMode': 'model',
+                        'groupContext': group,
+                        'accountId': account_id,
+                        'planCode': group.get('planCode'),
+                        'serverName': group.get('server'),
+                        'options': hardware_options,
+                        'memoryOptions': group.get('memories') or ['N/A'],
+                        'storageOptions': storage_options,
+                        'datacenterOptions': datacenter_options,
+                        'selectedMemory': None,
+                        'selectedStorage': None,
+                        'selectedDatacenter': None,
+                        'selectedAction': None,
+                        'selectedQuantity': None,
+                        'selectedAutoPay': None,
+                        'selectedRetryInterval': None,
+                        'timestamp': time.time(),
+                        'fqn': first_item.get('fqn'),
+                    }
+                tg_buttons = build_new_server_memory_buttons('telegram', message_uuid, group.get('memories') or ['N/A'])
+                feishu_card = build_new_availability_group_feishu_card(group, message_uuid, account_id)
+                send_bot_message(
+                    build_new_availability_group_message(group, account_id),
+                    reply_markup=build_tg_inline_keyboard(tg_buttons, row_size=2),
+                    account_id=account_id,
+                    feishu_card=feishu_card
+                )
+        elif config.get('availabilityNotifyGroupByConfig'):
+            for item in new_items:
+                message_uuid = str(uuid.uuid4())
+                monitor_obj = get_monitor_for_account(account_id)
+                memory_options = [item.get('memory', 'N/A')]
+                storage_options = [item.get('storage', 'N/A')]
+                hardware_options = recover_new_server_options(item.get('planCode'), item.get('memory'), item.get('storage'), account_id)
+                if hasattr(monitor_obj, 'message_uuid_cache'):
+                    monitor_obj.message_uuid_cache[message_uuid] = {
+                        'type': 'new_server_discovery',
+                        'source': 'availability',
+                        'groupMode': 'config',
+                        'accountId': account_id,
+                        'planCode': item.get('planCode'),
+                        'serverName': item.get('server'),
+                        'options': hardware_options,
+                        'memoryOptions': memory_options,
+                        'storageOptions': storage_options,
+                        'datacenterOptions': item.get('datacenters') or [],
+                        'selectedMemory': None,
+                        'selectedStorage': None,
+                        'selectedDatacenter': None,
+                        'selectedAction': None,
+                        'selectedQuantity': None,
+                        'selectedAutoPay': None,
+                        'selectedRetryInterval': None,
+                        'timestamp': time.time(),
+                        'fqn': item.get('fqn'),
+                    }
+                tg_buttons = build_new_server_memory_buttons('telegram', message_uuid, memory_options)
+                feishu_card = build_new_availability_feishu_card(item, message_uuid, account_id)
+                send_bot_message(
+                    build_new_availability_server_message(item, account_id),
+                    reply_markup=build_tg_inline_keyboard(tg_buttons, row_size=2),
+                    account_id=account_id,
+                    feishu_card=feishu_card
+                )
 
 
 def servers_auto_refresh_loop():
@@ -5252,6 +5384,10 @@ def save_settings():
         config["serversNewServerNotifyEnabled"] = bool(data.get("serversNewServerNotifyEnabled"))
     if data.get("availabilityNewServerNotifyEnabled") is not None:
         config["availabilityNewServerNotifyEnabled"] = bool(data.get("availabilityNewServerNotifyEnabled"))
+    if data.get("availabilityNotifyGroupByModel") is not None:
+        config["availabilityNotifyGroupByModel"] = bool(data.get("availabilityNotifyGroupByModel"))
+    if data.get("availabilityNotifyGroupByConfig") is not None:
+        config["availabilityNotifyGroupByConfig"] = bool(data.get("availabilityNotifyGroupByConfig"))
     if data.get("primaryRefreshAccountId") is not None:
         config["primaryRefreshAccountId"] = (data.get("primaryRefreshAccountId") or "").strip()
     if data.get("serverInventoryRefreshEnabled") is not None:
@@ -6285,6 +6421,8 @@ def telegram_webhook():
                 if not ctx:
                     return jsonify({"ok": False, "error": 'expired'}), 400
                 ctx['selectedMemory'] = value
+                if ctx.get('groupMode') == 'model':
+                    ctx['storageOptions'] = build_storage_options_for_memory(ctx.get('groupContext'), value)
                 save_new_server_context(uuid_value, ctx)
                 buttons = build_new_server_buttons('telegram', uuid_value, 'new_server_select_storage', ctx.get('storageOptions') or [])
                 if tg_token:
@@ -6303,6 +6441,9 @@ def telegram_webhook():
                 if not ctx:
                     return jsonify({"ok": False, "error": 'expired'}), 400
                 ctx['selectedStorage'] = value
+                if ctx.get('groupMode') == 'model':
+                    ctx['datacenterOptions'] = build_datacenter_options_for_memory_storage(ctx.get('groupContext'), ctx.get('selectedMemory'), value)
+                ctx['options'] = recover_new_server_options(ctx.get('planCode'), ctx.get('selectedMemory'), value, ctx.get('accountId'))
                 save_new_server_context(uuid_value, ctx)
                 datacenter_options = ctx.get('datacenterOptions') or []
                 if not datacenter_options:
@@ -6772,6 +6913,8 @@ def feishu_card_action():
         if not ctx:
             return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
         ctx['selectedMemory'] = value
+        if ctx.get('groupMode') == 'model':
+            ctx['storageOptions'] = build_storage_options_for_memory(ctx.get('groupContext'), value)
         save_new_server_context(uuid_value, ctx)
         buttons = build_new_server_buttons('feishu', uuid_value, 'new_server_select_storage', ctx.get('storageOptions') or [])
         send_feishu_card(build_feishu_order_card('新增服务器交互', build_new_server_step_message(ctx, 'storage'), buttons), open_id=open_id)
@@ -6784,6 +6927,9 @@ def feishu_card_action():
         if not ctx:
             return jsonify({"toast": {"type": "error", "content": "交互已过期，请等待下一次通知"}})
         ctx['selectedStorage'] = value
+        if ctx.get('groupMode') == 'model':
+            ctx['datacenterOptions'] = build_datacenter_options_for_memory_storage(ctx.get('groupContext'), ctx.get('selectedMemory'), value)
+        ctx['options'] = recover_new_server_options(ctx.get('planCode'), ctx.get('selectedMemory'), value, ctx.get('accountId'))
         save_new_server_context(uuid_value, ctx)
         datacenter_options = ctx.get('datacenterOptions') or []
         if not datacenter_options:

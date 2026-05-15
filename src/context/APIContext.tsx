@@ -33,6 +33,8 @@ interface APIContextType {
   availabilityAutoRefreshIntervalSeconds: number;
   serversNewServerNotifyEnabled: boolean;
   availabilityNewServerNotifyEnabled: boolean;
+  availabilityNotifyGroupByModel: boolean;
+  availabilityNotifyGroupByConfig: boolean;
   primaryRefreshAccountId: string;
   serverInventoryRefreshEnabled: boolean;
   serverInventoryRefreshIntervalSeconds: number;
@@ -69,6 +71,8 @@ interface APIKeysType {
   availabilityAutoRefreshIntervalSeconds?: number;
   serversNewServerNotifyEnabled?: boolean;
   availabilityNewServerNotifyEnabled?: boolean;
+  availabilityNotifyGroupByModel?: boolean;
+  availabilityNotifyGroupByConfig?: boolean;
   primaryRefreshAccountId?: string;
   serverInventoryRefreshEnabled?: boolean;
   serverInventoryRefreshIntervalSeconds?: number;
@@ -98,6 +102,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
   const [availabilityAutoRefreshIntervalSeconds, setAvailabilityAutoRefreshIntervalSeconds] = useState<number>(3600);
   const [serversNewServerNotifyEnabled, setServersNewServerNotifyEnabled] = useState<boolean>(false);
   const [availabilityNewServerNotifyEnabled, setAvailabilityNewServerNotifyEnabled] = useState<boolean>(false);
+  const [availabilityNotifyGroupByModel, setAvailabilityNotifyGroupByModel] = useState<boolean>(true);
+  const [availabilityNotifyGroupByConfig, setAvailabilityNotifyGroupByConfig] = useState<boolean>(false);
   const [primaryRefreshAccountId, setPrimaryRefreshAccountId] = useState<string>('');
   const [serverInventoryRefreshEnabled, setServerInventoryRefreshEnabled] = useState<boolean>(false);
   const [serverInventoryRefreshIntervalSeconds, setServerInventoryRefreshIntervalSeconds] = useState<number>(3600);
@@ -139,6 +145,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         setAvailabilityAutoRefreshIntervalSeconds(Number(data?.availabilityAutoRefreshIntervalSeconds || 3600));
         setServersNewServerNotifyEnabled(!!data?.serversNewServerNotifyEnabled);
         setAvailabilityNewServerNotifyEnabled(!!data?.availabilityNewServerNotifyEnabled);
+        setAvailabilityNotifyGroupByModel(data?.availabilityNotifyGroupByModel !== false);
+        setAvailabilityNotifyGroupByConfig(!!data?.availabilityNotifyGroupByConfig);
         setPrimaryRefreshAccountId(data?.primaryRefreshAccountId || '');
         setServerInventoryRefreshEnabled(!!data?.serverInventoryRefreshEnabled);
         setServerInventoryRefreshIntervalSeconds(Number(data?.serverInventoryRefreshIntervalSeconds || 3600));
@@ -243,6 +251,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         availabilityAutoRefreshIntervalSeconds: keys.availabilityAutoRefreshIntervalSeconds || 3600,
         serversNewServerNotifyEnabled: !!keys.serversNewServerNotifyEnabled,
         availabilityNewServerNotifyEnabled: !!keys.availabilityNewServerNotifyEnabled,
+        availabilityNotifyGroupByModel: keys.availabilityNotifyGroupByModel !== false,
+        availabilityNotifyGroupByConfig: !!keys.availabilityNotifyGroupByConfig,
         primaryRefreshAccountId: keys.primaryRefreshAccountId || '',
         serverInventoryRefreshEnabled: !!keys.serverInventoryRefreshEnabled,
         serverInventoryRefreshIntervalSeconds: keys.serverInventoryRefreshIntervalSeconds || 3600,
@@ -267,6 +277,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
       setAvailabilityAutoRefreshIntervalSeconds(keys.availabilityAutoRefreshIntervalSeconds || 3600);
       setServersNewServerNotifyEnabled(!!keys.serversNewServerNotifyEnabled);
       setAvailabilityNewServerNotifyEnabled(!!keys.availabilityNewServerNotifyEnabled);
+      setAvailabilityNotifyGroupByModel(keys.availabilityNotifyGroupByModel !== false);
+      setAvailabilityNotifyGroupByConfig(!!keys.availabilityNotifyGroupByConfig);
       setPrimaryRefreshAccountId(keys.primaryRefreshAccountId || '');
       setServerInventoryRefreshEnabled(!!keys.serverInventoryRefreshEnabled);
       setServerInventoryRefreshIntervalSeconds(keys.serverInventoryRefreshIntervalSeconds || 3600);
@@ -352,6 +364,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
     availabilityAutoRefreshIntervalSeconds,
     serversNewServerNotifyEnabled,
     availabilityNewServerNotifyEnabled,
+    availabilityNotifyGroupByModel,
+    availabilityNotifyGroupByConfig,
     primaryRefreshAccountId,
     serverInventoryRefreshEnabled,
     serverInventoryRefreshIntervalSeconds,
