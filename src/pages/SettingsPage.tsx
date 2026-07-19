@@ -348,6 +348,8 @@ const SettingsPage = () => {
     
     setIsSaving(true);
     try {
+      const previousApiSecretKey = getApiSecretKey() || "";
+
       // 1. 先保存访问密码到 localStorage，并立即用 /settings 校验密码是否正确
       setApiSecretKey(normalizedApiSecretKey);
       setFormValues(prev => ({ ...prev, apiSecretKey: normalizedApiSecretKey }));
@@ -358,6 +360,11 @@ const SettingsPage = () => {
       try {
         await api.get('/settings');
       } catch (error: any) {
+        if (previousApiSecretKey) {
+          setApiSecretKey(previousApiSecretKey);
+        } else {
+          localStorage.removeItem('api_secret_key');
+        }
         const status = error?.response?.status;
         if (status === 401) {
           toast.error('访问密码不正确，请检查后重试');
@@ -397,9 +404,9 @@ const SettingsPage = () => {
       }
 
       if (settingsSaved) {
-        toast.success("访问密码与通知配置已保存，页面将刷新");
+        toast.success("浏览器访问密钥与通知配置已保存，页面将刷新");
       } else {
-        toast.success("访问密码验证通过，页面将刷新进入面板");
+        toast.success("浏览器访问密钥验证通过，页面将刷新进入面板");
         toast.warning("其它设置保存失败，请进入面板后重新保存通知配置");
       }
 
@@ -445,7 +452,7 @@ const SettingsPage = () => {
                 <h2 className={`${isMobile ? 'text-lg' : 'text-xl'} font-bold mb-3 sm:mb-4`}>🔐 访问密码</h2>
                 <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
                   <p className="text-xs text-yellow-300">
-                    ⚠️ 此密码用于保护前后端通信和面板访问，需要与后端配置保持一致。请妥善保管，不要泄露！
+                    ⚠️ 这里不会修改后端真正的 `API_SECRET_KEY`，只会更新当前浏览器保存的访问密钥。若后端密码已变更，请在容器环境变量或后端 `.env` 中修改后，再在这里输入相同值完成同步。
                   </p>
                 </div>
                 

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Shield, KeyRound } from 'lucide-react';
-import { api, setApiSecretKey } from '@/utils/apiClient';
+import { api, clearApiSecretKey, setApiSecretKey } from '@/utils/apiClient';
 import { toast } from 'sonner';
 
 
@@ -29,6 +29,7 @@ const LoginPage = () => {
       toast.success('访问密码验证成功');
       navigate(targetPath, { replace: true });
     } catch (error: any) {
+      clearApiSecretKey();
       if (error?.response?.status === 401) {
         toast.error('访问密码不正确，请检查后重试');
       } else {
