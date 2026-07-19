@@ -39,20 +39,14 @@ def require_api_key(f):
                 'message': 'API密钥无效'
             }), 401
         
-        # 可选：验证请求时间戳（防重放攻击）
+        # 浏览器和服务器时钟不一致时，这里的强校验会把正确密码误判成401。
+        # 当前没有配套签名机制，时间戳只保留为弱校验参考，不再拒绝请求。
         request_time = request.headers.get('X-Request-Time')
         if request_time:
             try:
                 timestamp = int(request_time)
                 current_time = int(time.time() * 1000)
                 time_diff = abs(current_time - timestamp)
-                
-                # 如果请求时间与服务器时间相差超过5分钟，拒绝请求
-                if time_diff > 5 * 60 * 1000:  # 5分钟
-                    return jsonify({
-                        'error': 'Request expired',
-                        'message': '请求已过期，请刷新页面重试'
-                    }), 401
             except ValueError:
                 pass  # 时间戳格式错误，忽略但继续处理
         
@@ -102,21 +96,14 @@ def init_api_auth(app):
                 'code': 'INVALID_API_KEY'
             }), 401
         
-        # 可选：验证请求时间戳
+        # 浏览器和服务器时钟不一致时，这里的强校验会把正确密码误判成401。
+        # 当前没有配套签名机制，时间戳只保留为弱校验参考，不再拒绝请求。
         request_time = request.headers.get('X-Request-Time')
         if request_time:
             try:
                 timestamp = int(request_time)
                 current_time = int(time.time() * 1000)
                 time_diff = abs(current_time - timestamp)
-                
-                # 如果请求时间与服务器时间相差超过5分钟，拒绝请求
-                if time_diff > 5 * 60 * 1000:
-                    return jsonify({
-                        'error': 'Request expired',
-                        'message': '请求已过期（时间戳验证失败）',
-                        'code': 'TIMESTAMP_EXPIRED'
-                    }), 401
             except ValueError:
                 # 时间戳格式错误，记录但不阻止请求
                 pass
