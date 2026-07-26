@@ -183,6 +183,7 @@ vps_monitor_lock = threading.RLock()
 
 # 轻量并发控制结构
 queue_lock = threading.RLock()
+bot_reboot_lock = threading.RLock()
 processing_item_ids = set()
 account_checkout_semaphores = {}
 executor = ThreadPoolExecutor(max_workers=3)
@@ -1532,6 +1533,16 @@ def clear_bot_pending_action(channel: str, user_key: str):
     save_bot_pending_actions()
 
 
+def is_valid_reboot_pending(pending: dict, expected_type: str, flow_id: str):
+    created_at = pending.get('createdAt') or 0
+    return (
+        pending.get('type') == expected_type and
+        bool(flow_id) and
+        flow_id == pending.get('flowId') and
+        time.time() - created_at <= 600
+    )
+
+
 def ensure_new_server_pending_slot(channel: str, user_key: str, uuid_value: str):
     pending = get_bot_pending_action(channel, user_key)
     pending_type = pending.get('type')
@@ -1582,7 +1593,7 @@ def build_bot_help_message():
         "/monitor-all - 查看所有API账户监控任务\n"
         "/autobuy - 查看当前抢购任务\n"
         "/autobuy-all - 查看所有API账户抢购任务\n"
-        "/reboot <服务器自定义名称> - 在所有API账户下查找服务器并确认重启\n"
+        "/reboot - 依次选择API账户和服务器并确认重启\n"
         "/switch - 依次循环切换 API 账户\n"
         "/switch <邮箱> - 切换到指定邮箱对应的 API 账户\n\n"
         "/alias - 为所有API账户下服务器绑定别名\n\n"
@@ -1745,28 +1756,38 @@ def format_plan_summary(plan_code):
     return f"{meta['name']} | 型号: {plan_code} | 内存: {meta['memory']} | 硬盘: {meta['storage']}"
 
 
+def list_account_servers(account_id):
+    result = []
+    if account_id not in accounts:
+        return result
+    client = get_ovh_client(account_id)
+    if not client:
+        return result
+    try:
+        service_names = client.get('/dedicated/server')
+        for service_name in service_names:
+            server_info = {}
+            try:
+                server_info = client.get(f'/dedicated/server/{service_name}')
+            except Exception as e:
+                add_log('WARNING', f"获取服务器 {service_name} 信息失败: {str(e)}", 'bot')
+            result.append({
+                'accountId': account_id,
+                'accountAlias': get_account_conversation_label(account_id),
+                'serviceName': service_name,
+                'displayName': get_server_alias(account_id, service_name, server_info.get('name', service_name)),
+                'datacenter': server_info.get('datacenter', 'N/A'),
+                'state': server_info.get('state', 'unknown')
+            })
+    except Exception as e:
+        add_log('WARNING', f"获取账户 {account_id} 服务器列表失败: {str(e)}", 'bot')
+    return result
+
+
 def list_all_account_servers():
     result = []
-    for account_id, acc in accounts.items():
-        client = get_ovh_client(account_id)
-        if not client:
-            continue
-        try:
-            service_names = client.get('/dedicated/server')
-            for service_name in service_names[:50]:
-                try:
-                    server_info = client.get(f'/dedicated/server/{service_name}')
-                    display_name = get_server_alias(account_id, service_name, server_info.get('name', service_name))
-                except Exception:
-                    display_name = get_server_alias(account_id, service_name, service_name)
-                result.append({
-                    'accountId': account_id,
-                    'accountAlias': get_account_conversation_label(account_id),
-                    'serviceName': service_name,
-                    'displayName': display_name
-                })
-        except Exception as e:
-            add_log('WARNING', f"获取账户 {account_id} 服务器列表失败: {str(e)}", 'bot')
+    for account_id in accounts:
+        result.extend(list_account_servers(account_id))
     return result
 
 
@@ -1911,6 +1932,59 @@ def build_reboot_target_message():
     return "请选择要重启的服务器："
 
 
+def build_reboot_account_message():
+    return "请选择服务器所属的 API 账户："
+
+
+def build_reboot_account_buttons(channel: str, user_key: str, flow_id=None, page=0):
+    buttons = []
+    account_ids = list(accounts.keys())
+    page_size = 3
+    page_count = max(1, (len(account_ids) + page_size - 1) // page_size)
+    page = max(0, min(page, page_count - 1))
+    start = page * page_size
+    for index, account_id in enumerate(account_ids[start:start + page_size], start=start):
+        label = get_account_conversation_label(account_id)
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({'a': 'rsa', 'i': index, 'f': flow_id}, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {
+                    'action': 'reboot_select_account',
+                    'accountId': account_id,
+                    'flowId': flow_id,
+                    'userKey': user_key
+                }
+            })
+    for label, target_page in [('上一页', page - 1), ('下一页', page + 1)]:
+        if target_page < 0 or target_page >= page_count:
+            continue
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({'a': 'rap', 'p': target_page, 'f': flow_id}, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {
+                    'action': 'reboot_account_page',
+                    'page': target_page,
+                    'flowId': flow_id,
+                    'userKey': user_key
+                }
+            })
+    return buttons
+
+
 def build_reboot_confirm_message(server):
     return (
         "确认重启以下服务器吗？\n\n"
@@ -1922,19 +1996,18 @@ def build_reboot_confirm_message(server):
     )
 
 
-def build_reboot_target_buttons(channel: str, user_key: str, servers: list):
+def build_reboot_target_buttons(channel: str, user_key: str, servers: list, flow_id=None, page=0):
     buttons = []
-    for server in servers:
-        label = f"{server.get('accountAlias')} | {server.get('displayName')}"
+    page_size = 3
+    page_count = max(1, (len(servers) + page_size - 1) // page_size)
+    page = max(0, min(page, page_count - 1))
+    start = page * page_size
+    for index, server in enumerate(servers[start:start + page_size], start=start):
+        label = server.get('displayName') or server.get('serviceName')
         if channel == 'telegram':
             buttons.append({
                 'text': label,
-                'callback_data': json.dumps({
-                    'a': 'reboot_select_target',
-                    'accountId': server.get('accountId'),
-                    'serviceName': server.get('serviceName'),
-                    'userKey': user_key
-                }, ensure_ascii=False, separators=(',', ':'))
+                'callback_data': json.dumps({'a': 'rst', 'i': index, 'f': flow_id}, separators=(',', ':'))
             })
         else:
             buttons.append({
@@ -1945,13 +2018,34 @@ def build_reboot_target_buttons(channel: str, user_key: str, servers: list):
                     'action': 'reboot_select_target',
                     'accountId': server.get('accountId'),
                     'serviceName': server.get('serviceName'),
+                    'flowId': flow_id,
+                    'userKey': user_key
+                }
+            })
+    for label, target_page in [('上一页', page - 1), ('下一页', page + 1)]:
+        if target_page < 0 or target_page >= page_count:
+            continue
+        if channel == 'telegram':
+            buttons.append({
+                'text': label,
+                'callback_data': json.dumps({'a': 'rsp', 'p': target_page, 'f': flow_id}, separators=(',', ':'))
+            })
+        else:
+            buttons.append({
+                'tag': 'button',
+                'text': {'tag': 'plain_text', 'content': label},
+                'type': 'default',
+                'value': {
+                    'action': 'reboot_server_page',
+                    'page': target_page,
+                    'flowId': flow_id,
                     'userKey': user_key
                 }
             })
     return buttons
 
 
-def build_reboot_confirm_buttons(channel: str, user_key: str, server):
+def build_reboot_confirm_buttons(channel: str, user_key: str, server, flow_id=None, confirmation_id=None):
     options = [
         {'label': '确认重启', 'value': 'confirm'},
         {'label': '取消', 'value': 'cancel'}
@@ -1962,12 +2056,11 @@ def build_reboot_confirm_buttons(channel: str, user_key: str, server):
             buttons.append({
                 'text': option['label'],
                 'callback_data': json.dumps({
-                    'a': 'reboot_confirm',
-                    'accountId': server.get('accountId'),
-                    'serviceName': server.get('serviceName'),
-                    'decision': option['value'],
-                    'userKey': user_key
-                }, ensure_ascii=False, separators=(',', ':'))
+                    'a': 'rc',
+                    'd': '1' if option['value'] == 'confirm' else '0',
+                    'f': flow_id,
+                    'c': confirmation_id
+                }, separators=(',', ':'))
             })
         else:
             buttons.append({
@@ -1979,44 +2072,12 @@ def build_reboot_confirm_buttons(channel: str, user_key: str, server):
                     'accountId': server.get('accountId'),
                     'serviceName': server.get('serviceName'),
                     'decision': option['value'],
+                    'flowId': flow_id,
+                    'confirmationId': confirmation_id,
                     'userKey': user_key
                 }
             })
     return buttons
-
-
-def find_servers_for_reboot(keyword: str):
-    all_servers = list_all_account_servers()
-    if not keyword:
-        return []
-    term = keyword.strip()
-    term_lower = term.lower()
-
-    def exact_match(server):
-        return (
-            str(server.get('displayName', '')).strip() == term or
-            str(server.get('serviceName', '')).strip() == term
-        )
-
-    def exact_casefold(server):
-        return (
-            str(server.get('displayName', '')).strip().lower() == term_lower or
-            str(server.get('serviceName', '')).strip().lower() == term_lower
-        )
-
-    def contains_match(server):
-        return (
-            term_lower in str(server.get('displayName', '')).lower() or
-            term_lower in str(server.get('serviceName', '')).lower()
-        )
-
-    matches = [s for s in all_servers if exact_match(s)]
-    if matches:
-        return matches
-    matches = [s for s in all_servers if exact_casefold(s)]
-    if matches:
-        return matches
-    return [s for s in all_servers if contains_match(s)]
 
 
 def reboot_server_for_bot(account_id, service_name):
@@ -2040,6 +2101,15 @@ def build_tg_inline_keyboard(buttons, row_size=2):
             inline_keyboard.append(row)
             row = []
     return {'inline_keyboard': inline_keyboard}
+
+
+def is_authorized_telegram_chat(chat_id):
+    allowed_chat_ids = {str(config.get('tgChatId')).strip()} if config.get('tgChatId') else set()
+    for account in accounts.values():
+        account_chat_id = account.get('tgChatId')
+        if account_chat_id:
+            allowed_chat_ids.add(str(account_chat_id).strip())
+    return bool(allowed_chat_ids) and str(chat_id).strip() in allowed_chat_ids
 
 
 def validate_refresh_interval(value):
@@ -3060,34 +3130,24 @@ def dispatch_bot_command(channel: str, user_key: str, text: str):
     if lower == '/autobuy-all':
         return {"text": build_autobuy_all_message()}
     if lower.startswith('/reboot'):
-        parts = normalized.split(maxsplit=1)
-        keyword = parts[1].strip() if len(parts) > 1 else ''
-        if not keyword:
-            return {'text': '请输入服务器自定义名称，例如：/reboot Web-01'}
-        matches = find_servers_for_reboot(keyword)
-        if not matches:
-            return {'text': f'未找到名称为 {keyword} 的服务器\n请确认名称是否正确，或先使用 /status-all 查看所有账户服务器'}
-        if len(matches) == 1:
-            server = matches[0]
-            buttons = build_reboot_confirm_buttons(channel, user_key, server)
-            if channel == 'telegram':
-                return {
-                    'text': build_reboot_confirm_message(server),
-                    'reply_markup': build_tg_inline_keyboard(buttons, row_size=2)
-                }
-            return {
-                'text': build_reboot_confirm_message(server),
-                'card': build_feishu_order_card('确认重启服务器', build_reboot_confirm_message(server), buttons)
-            }
-        buttons = build_reboot_target_buttons(channel, user_key, matches)
+        flow_id = uuid.uuid4().hex[:8]
+        buttons = build_reboot_account_buttons(channel, user_key, flow_id)
+        if not buttons:
+            return {'text': '当前没有可用的 API 账户，请先在网页端配置账户。'}
+        set_bot_pending_action(channel, user_key, {
+            'type': 'reboot_account_select',
+            'accountIds': list(accounts.keys()),
+            'flowId': flow_id,
+            'createdAt': time.time()
+        })
         if channel == 'telegram':
             return {
-                'text': build_reboot_target_message(),
-                'reply_markup': build_tg_inline_keyboard(buttons, row_size=1)
+                'text': build_reboot_account_message(),
+                'reply_markup': build_tg_inline_keyboard(buttons, row_size=2)
             }
         return {
-            'text': build_reboot_target_message(),
-            'card': build_feishu_order_card('选择要重启的服务器', build_reboot_target_message(), buttons)
+            'text': build_reboot_account_message(),
+            'card': build_feishu_order_card('选择 API 账户', build_reboot_account_message(), buttons)
         }
     if lower.startswith('/switch'):
         parts = normalized.split(maxsplit=1)
@@ -6065,6 +6125,9 @@ def telegram_webhook():
             message_id = message.get("message_id")
             from_user = callback_query.get("from", {})
             user_id = from_user.get("id")
+            if not is_authorized_telegram_chat(chat_id):
+                add_log("WARNING", f"忽略未授权 Telegram 回调: chat_id={chat_id}, user_id={user_id}", "telegram")
+                return jsonify({"ok": True})
             
             add_log("INFO", f"收到Telegram回调: user_id={user_id}, callback_data={callback_data[:50]}...", "telegram")
             cbid = callback_query.get("id")
@@ -6385,26 +6448,145 @@ def telegram_webhook():
                     }, 10)
                 return jsonify({"ok": True})
 
-            elif action == 'reboot_select_target':
-                account_id = callback_data_obj.get('accountId')
-                service_name = callback_data_obj.get('serviceName')
-                server = next((s for s in find_servers_for_reboot(service_name) if s.get('accountId') == account_id and s.get('serviceName') == service_name), None)
+            elif action == 'rap':
+                pending = get_bot_pending_action('telegram', str(user_id))
+                flow_id = callback_data_obj.get('f')
+                page = callback_data_obj.get('p')
+                if tg_token and is_valid_reboot_pending(pending, 'reboot_account_select', flow_id) and isinstance(page, int):
+                    buttons = build_reboot_account_buttons('telegram', str(user_id), flow_id, page)
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": build_reboot_account_message(),
+                        "reply_markup": build_tg_inline_keyboard(buttons, row_size=1),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'rsa':
+                index = callback_data_obj.get('i')
+                flow_id = callback_data_obj.get('f')
+                with bot_reboot_lock:
+                    pending = get_bot_pending_action('telegram', str(user_id))
+                    account_ids = pending.get('accountIds') or []
+                    pending_valid = is_valid_reboot_pending(pending, 'reboot_account_select', flow_id)
+                    account_id = account_ids[index] if pending_valid and isinstance(index, int) and 0 <= index < len(account_ids) else None
+                    server_selection_id = uuid.uuid4().hex[:8] if account_id else None
+                    if account_id:
+                        set_bot_pending_action('telegram', str(user_id), {
+                            'type': 'reboot_server_loading',
+                            'accountId': account_id,
+                            'flowId': flow_id,
+                            'serverSelectionId': server_selection_id,
+                            'createdAt': time.time()
+                        })
+                if not account_id:
+                    if tg_token:
+                        _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                            "chat_id": chat_id,
+                            "text": "账户选择已过期，请重新发送 /reboot。",
+                            "reply_to_message_id": message_id
+                        }, 10)
+                    return jsonify({"ok": True})
+                servers = list_account_servers(account_id)
+                with bot_reboot_lock:
+                    loading = get_bot_pending_action('telegram', str(user_id))
+                    loading_valid = (
+                        is_valid_reboot_pending(loading, 'reboot_server_loading', flow_id) and
+                        server_selection_id == loading.get('serverSelectionId')
+                    )
+                    if loading_valid:
+                        set_bot_pending_action('telegram', str(user_id), {
+                            'type': 'reboot_server_select',
+                            'servers': servers,
+                            'flowId': flow_id,
+                            'serverSelectionId': server_selection_id,
+                            'createdAt': time.time()
+                        })
+                if not loading_valid:
+                    return jsonify({"ok": True})
+                if tg_token:
+                    buttons = build_reboot_target_buttons('telegram', str(user_id), servers, flow_id)
+                    message_text = (
+                        f"已选择账户：{get_account_conversation_label(account_id)}\n{build_reboot_target_message()}"
+                        if servers else
+                        f"账户 {get_account_conversation_label(account_id)} 下没有可重启的服务器。"
+                    )
+                    payload = {
+                        "chat_id": chat_id,
+                        "text": message_text,
+                        "reply_to_message_id": message_id
+                    }
+                    if buttons:
+                        payload["reply_markup"] = build_tg_inline_keyboard(buttons, row_size=1)
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", payload, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'rsp':
+                pending = get_bot_pending_action('telegram', str(user_id))
+                flow_id = callback_data_obj.get('f')
+                page = callback_data_obj.get('p')
+                if tg_token and is_valid_reboot_pending(pending, 'reboot_server_select', flow_id) and isinstance(page, int):
+                    buttons = build_reboot_target_buttons('telegram', str(user_id), pending.get('servers') or [], flow_id, page)
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": build_reboot_target_message(),
+                        "reply_markup": build_tg_inline_keyboard(buttons, row_size=1),
+                        "reply_to_message_id": message_id
+                    }, 10)
+                return jsonify({"ok": True})
+
+            elif action == 'rst':
+                index = callback_data_obj.get('i')
+                flow_id = callback_data_obj.get('f')
+                with bot_reboot_lock:
+                    pending = get_bot_pending_action('telegram', str(user_id))
+                    servers = pending.get('servers') or []
+                    pending_valid = is_valid_reboot_pending(pending, 'reboot_server_select', flow_id)
+                    server = servers[index] if pending_valid and isinstance(index, int) and 0 <= index < len(servers) else None
+                    confirmation_id = uuid.uuid4().hex[:8] if server else None
+                    if server:
+                        set_bot_pending_action('telegram', str(user_id), {
+                            'type': 'reboot_confirm',
+                            'accountId': server.get('accountId'),
+                            'serviceName': server.get('serviceName'),
+                            'flowId': flow_id,
+                            'confirmationId': confirmation_id,
+                            'createdAt': time.time()
+                        })
                 if server and tg_token:
-                    buttons = build_reboot_confirm_buttons('telegram', str(user_id), server)
+                    buttons = build_reboot_confirm_buttons('telegram', str(user_id), server, flow_id, confirmation_id)
                     _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
                         "chat_id": chat_id,
                         "text": build_reboot_confirm_message(server),
                         "reply_markup": build_tg_inline_keyboard(buttons, row_size=2),
                         "reply_to_message_id": message_id
                     }, 10)
+                elif tg_token:
+                    _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
+                        "chat_id": chat_id,
+                        "text": "服务器选择已过期，请重新发送 /reboot。",
+                        "reply_to_message_id": message_id
+                    }, 10)
                 return jsonify({"ok": True})
 
-            elif action == 'reboot_confirm':
-                account_id = callback_data_obj.get('accountId')
-                service_name = callback_data_obj.get('serviceName')
-                decision = callback_data_obj.get('decision')
-                message_text = '已取消重启操作'
-                if decision != 'cancel':
+            elif action == 'rc':
+                if cbid:
+                    processed_callback_ids.add(cbid)
+                decision = 'confirm' if callback_data_obj.get('d') == '1' else 'cancel'
+                flow_id = callback_data_obj.get('f')
+                confirmation_id = callback_data_obj.get('c')
+                with bot_reboot_lock:
+                    pending = get_bot_pending_action('telegram', str(user_id))
+                    interaction_valid = (
+                        is_valid_reboot_pending(pending, 'reboot_confirm', flow_id) and
+                        confirmation_id == pending.get('confirmationId')
+                    )
+                    account_id = pending.get('accountId') if interaction_valid else None
+                    service_name = pending.get('serviceName') if interaction_valid else None
+                    if interaction_valid:
+                        clear_bot_pending_action('telegram', str(user_id))
+                message_text = '已取消重启操作' if interaction_valid else '重启确认已过期，请重新发送 /reboot。'
+                if interaction_valid and decision != 'cancel':
                     ok, message_text = reboot_server_for_bot(account_id, service_name)
                 if tg_token:
                     _tg_post(f"https://api.telegram.org/bot{tg_token}/sendMessage", {
@@ -6641,6 +6823,9 @@ def telegram_webhook():
             message_id = message_obj.get("message_id")
             from_user = message_obj.get("from", {})
             user_id = from_user.get("id")
+            if not is_authorized_telegram_chat(chat_id):
+                add_log("WARNING", f"忽略未授权 Telegram 消息: chat_id={chat_id}, user_id={user_id}", "telegram")
+                return jsonify({"ok": True})
             
             # 获取 Telegram Token
             tg_token = config.get("tgToken")
@@ -6750,9 +6935,9 @@ def feishu_card_action():
         return jsonify({"challenge": challenge})
 
     verify_token, app_id = extract_feishu_verify_values(body)
+    expected_verify_token = get_feishu_config().get('feishuVerificationToken') or ''
     token_valid = feishu_client.verify_token(verify_token)
-    app_id_valid = feishu_client.verify_app_id(app_id)
-    if (verify_token or app_id) and (not token_valid and not app_id_valid):
+    if not expected_verify_token or not verify_token or not token_valid:
         add_log("WARNING", f"飞书卡片回调校验失败: token={verify_token or '-'}, app_id={app_id or '-'}", "feishu")
         return jsonify({"code": 1, "msg": "invalid token"}), 403
 
@@ -6887,21 +7072,115 @@ def feishu_card_action():
         existed = remove_server_alias(account_id, service_name)
         return jsonify({"toast": {"type": "success", "content": ("已移除服务器别名" if existed else "该服务器当前没有别名")}})
 
+    if action_name == 'reboot_account_page':
+        flow_id = action.get('flowId')
+        page = action.get('page')
+        user_key = open_id or 'anonymous'
+        pending = get_bot_pending_action('feishu', user_key)
+        if not is_valid_reboot_pending(pending, 'reboot_account_select', flow_id) or not isinstance(page, int):
+            return jsonify({"toast": {"type": "error", "content": "账户选择已过期，请重新发送 /reboot"}})
+        buttons = build_reboot_account_buttons('feishu', user_key, flow_id, page)
+        send_feishu_card(build_feishu_order_card('选择 API 账户', build_reboot_account_message(), buttons), open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择账户"}})
+
+    if action_name == 'reboot_select_account':
+        account_id = action.get('accountId')
+        flow_id = action.get('flowId')
+        user_key = open_id or 'anonymous'
+        with bot_reboot_lock:
+            pending = get_bot_pending_action('feishu', user_key)
+            pending_valid = is_valid_reboot_pending(pending, 'reboot_account_select', flow_id)
+            account_valid = account_id in (pending.get('accountIds') or [])
+            server_selection_id = uuid.uuid4().hex[:8] if pending_valid and account_valid else None
+            if server_selection_id:
+                set_bot_pending_action('feishu', user_key, {
+                    'type': 'reboot_server_loading',
+                    'accountId': account_id,
+                    'flowId': flow_id,
+                    'serverSelectionId': server_selection_id,
+                    'createdAt': time.time()
+                })
+        if not server_selection_id:
+            return jsonify({"toast": {"type": "error", "content": "账户选择已过期，请重新发送 /reboot"}})
+        servers = list_account_servers(account_id)
+        if not servers:
+            return jsonify({"toast": {"type": "info", "content": "所选账户下没有可重启的服务器"}})
+        with bot_reboot_lock:
+            loading = get_bot_pending_action('feishu', user_key)
+            loading_valid = (
+                is_valid_reboot_pending(loading, 'reboot_server_loading', flow_id) and
+                server_selection_id == loading.get('serverSelectionId')
+            )
+            if loading_valid:
+                set_bot_pending_action('feishu', user_key, {
+                    'type': 'reboot_server_select',
+                    'servers': servers,
+                    'flowId': flow_id,
+                    'serverSelectionId': server_selection_id,
+                    'createdAt': time.time()
+                })
+        if not loading_valid:
+            return jsonify({"toast": {"type": "error", "content": "账户选择已被新的操作替代"}})
+        buttons = build_reboot_target_buttons('feishu', user_key, servers, flow_id)
+        message = f"已选择账户：{get_account_conversation_label(account_id)}\n{build_reboot_target_message()}"
+        send_feishu_card(build_feishu_order_card('选择要重启的服务器', message, buttons), open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择服务器"}})
+
     if action_name == 'reboot_select_target':
         account_id = action.get('accountId')
         service_name = action.get('serviceName')
-        server = next((s for s in find_servers_for_reboot(service_name) if s.get('accountId') == account_id and s.get('serviceName') == service_name), None)
+        flow_id = action.get('flowId')
+        user_key = open_id or 'anonymous'
+        with bot_reboot_lock:
+            pending = get_bot_pending_action('feishu', user_key)
+            servers = pending.get('servers') or []
+            pending_valid = is_valid_reboot_pending(pending, 'reboot_server_select', flow_id)
+            server = next((s for s in servers if s.get('accountId') == account_id and s.get('serviceName') == service_name), None) if pending_valid else None
+            confirmation_id = uuid.uuid4().hex[:8] if server else None
+            if server:
+                set_bot_pending_action('feishu', user_key, {
+                    'type': 'reboot_confirm',
+                    'accountId': account_id,
+                    'serviceName': service_name,
+                    'flowId': flow_id,
+                    'confirmationId': confirmation_id,
+                    'createdAt': time.time()
+                })
         if not server:
-            return jsonify({"toast": {"type": "error", "content": "未找到目标服务器"}})
-        buttons = build_reboot_confirm_buttons('feishu', open_id or 'anonymous', server)
+            return jsonify({"toast": {"type": "error", "content": "服务器选择已过期，请重新发送 /reboot"}})
+        buttons = build_reboot_confirm_buttons('feishu', user_key, server, flow_id, confirmation_id)
         send_feishu_card(build_feishu_order_card('确认重启服务器', build_reboot_confirm_message(server), buttons), open_id=open_id)
         return jsonify({"toast": {"type": "info", "content": "请确认是否重启"}})
 
+    if action_name == 'reboot_server_page':
+        flow_id = action.get('flowId')
+        page = action.get('page')
+        user_key = open_id or 'anonymous'
+        pending = get_bot_pending_action('feishu', user_key)
+        if not is_valid_reboot_pending(pending, 'reboot_server_select', flow_id) or not isinstance(page, int):
+            return jsonify({"toast": {"type": "error", "content": "服务器选择已过期，请重新发送 /reboot"}})
+        buttons = build_reboot_target_buttons('feishu', user_key, pending.get('servers') or [], flow_id, page)
+        send_feishu_card(build_feishu_order_card('选择要重启的服务器', build_reboot_target_message(), buttons), open_id=open_id)
+        return jsonify({"toast": {"type": "info", "content": "请选择服务器"}})
+
     if action_name == 'reboot_confirm':
-        account_id = action.get('accountId')
-        service_name = action.get('serviceName')
         decision = action.get('decision')
-        if decision == 'cancel':
+        flow_id = action.get('flowId')
+        confirmation_id = action.get('confirmationId')
+        user_key = open_id or 'anonymous'
+        with bot_reboot_lock:
+            pending = get_bot_pending_action('feishu', user_key)
+            interaction_valid = (
+                is_valid_reboot_pending(pending, 'reboot_confirm', flow_id) and
+                confirmation_id == pending.get('confirmationId')
+            )
+            account_id = pending.get('accountId') if interaction_valid else None
+            service_name = pending.get('serviceName') if interaction_valid else None
+            if interaction_valid:
+                clear_bot_pending_action('feishu', user_key)
+        if not interaction_valid:
+            return jsonify({"toast": {"type": "error", "content": "重启确认已过期，请重新发送 /reboot"}})
+        if decision != 'confirm':
             return jsonify({"toast": {"type": "info", "content": "已取消重启操作"}})
         ok, message = reboot_server_for_bot(account_id, service_name)
         return jsonify({"toast": {"type": "success" if ok else "error", "content": message}})
