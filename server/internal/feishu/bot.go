@@ -15,6 +15,7 @@ import (
 	"github.com/larksuite/oapi-sdk-go/v3/channel"
 	channeltypes "github.com/larksuite/oapi-sdk-go/v3/channel/types"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	larkevent "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
 	"github.com/ovh-buy/server/internal/app"
@@ -89,8 +90,15 @@ func (b *Bot) Start() {
 		lark.WithOpenBaseUrl(openBase),
 		lark.WithLogLevel(larkcore.LogLevelError),
 	)
+	// 这一步不能省：SDK 的 ws 客户端在 eventHandler == nil 时会把所有事件直接丢掉
+	// （ws/client_message.go 的 handleDataFrame 第一行判断），而 channel 的
+	// OnMessage/OnCardAction 又要用 wsClient.EventHandler() 拿同一个 dispatcher
+	// 去注册 handler。漏了它的症状很迷惑：长连接显示"已就绪"，但消息和卡片
+	// 回调一条都收不到。
+	dispatcher := larkevent.NewEventDispatcher("", "")
 	wsClient := larkws.NewClient(cfg.FeishuAppID, cfg.FeishuAppSecret,
 		larkws.WithDomain(openBase),
+		larkws.WithEventHandler(dispatcher),
 		larkws.WithLogLevel(larkcore.LogLevelError),
 	)
 	ch := channel.NewChannel(client, wsClient)
