@@ -75,6 +75,8 @@ func New(database *db.DB) *Store {
 	// 老配置里没有这两个字段(读出来是 0),补成默认值让 Get() 永远给出明确的数
 	s.cfg.DefaultRetryInterval = types.ClampRetryInterval(s.cfg.DefaultRetryInterval, types.DefaultTaskRetryInterval)
 	s.cfg.QuickOrderRetryInterval = types.ClampRetryInterval(s.cfg.QuickOrderRetryInterval, types.DefaultQuickRetryInterval)
+	// 汇率展示开关同样有"老配置里没有"的问题:空串按 both(保持升级前行为)。
+	s.cfg.DisplayMode = types.NormalizeDisplayMode(s.cfg.DisplayMode)
 	return s
 }
 
@@ -111,6 +113,8 @@ func (s *Store) Set(c types.Config) error {
 	if c.IAM == "" {
 		c.IAM = "go-ovh-" + strings.ToLower(c.Zone)
 	}
+	// 只认 off / both:前端传了没见过的值就按 both 存,避免"开关显示开着但实际被忽略"。
+	c.DisplayMode = types.NormalizeDisplayMode(c.DisplayMode)
 	if err := s.db.SetKV(kvConfigKey, encryptConfig(c)); err != nil {
 		return err
 	}

@@ -22,6 +22,11 @@ export interface SettingsConfig {
   defaultRetryInterval?: number;
   /** 监控触发的自动下单用的重试间隔（秒）。货刚出现那一刻窗口很窄，默认比普通任务激进 */
   quickOrderRetryInterval?: number;
+  /**
+   * 是否显示人民币参考价："both"（默认，原币 + ≈¥）/ "off"。
+   * 存在后端而不是 localStorage —— 同一份判据还要给通知（TG/飞书/webhook）用。
+   */
+  displayMode?: string;
 }
 
 /** 重试间隔的合法区间与默认值，与后端 types.ClampRetryInterval 一致 */

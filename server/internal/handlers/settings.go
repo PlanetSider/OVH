@@ -60,6 +60,8 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		// 前端留空 / 传 0 = 用默认;超出区间夹回来。存进去的永远是明确的数
 		newCfg.DefaultRetryInterval = types.ClampRetryInterval(newCfg.DefaultRetryInterval, types.DefaultTaskRetryInterval)
 		newCfg.QuickOrderRetryInterval = types.ClampRetryInterval(newCfg.QuickOrderRetryInterval, types.DefaultQuickRetryInterval)
+	// 汇率展示开关只认 off / both;前端没传(旧版前端)时按 both,保持升级前行为。
+	newCfg.DisplayMode = types.NormalizeDisplayMode(newCfg.DisplayMode)
 
 		if err := state.Config.Set(newCfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": ovh.Explain(err)})

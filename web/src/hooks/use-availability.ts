@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
 import { useActiveAccountEndpoint } from "@/components/common/active-endpoint";
 import { apiBaseUrlForEndpoint, endpointRegion } from "@/lib/ovh-regions";
-import { formatMoney } from "@/lib/money";
+import { currencyForSubsidiary, formatMoneyWithCny } from "@/lib/money";
 import i18n from "@/i18n";
 import { apiDatacenterCode } from "@/lib/datacenters";
 
@@ -262,6 +262,8 @@ export interface PriceInfo {
   installTax: number;
   /** 货币代码 EUR / USD / CAD 等；空串 = 目录没给，调用方必须显示成"无币种"而不是当欧元 */
   currency: string;
+  /** currency 是按子公司查表推断出来的（目录没报 currencyCode），展示时要注明"按区域估算" */
+  currencyEstimated: boolean;
 }
 
 /**
@@ -293,18 +295,24 @@ export interface CatalogIndex {
   addonByCode: Record<string, CatalogPlan>;
   /** 目录 locale.currencyCode 原样透传；目录还没到手时是空串，绝不兜底成 EUR */
   currency: string;
+  /** currency 是否为推断值（目录没报币种、按子公司表补的），展示时需注明 */
+  currencyEstimated: boolean;
 }
 export function buildCatalogIndex(catalog: CatalogData | undefined): CatalogIndex {
   // 币种一律取目录自己报的 locale.currencyCode,拿不到就留空。
   // 不能兜底 "EUR":币种按子公司定(实测 IE=EUR / CA=QC=CAD / US=WE=WS=USD / SG=SGD /
   // AU=AUD / GB=GBP / PL=PLN / MA=MAD / TN=TND / SN=XOF),目录还没到手时写死欧元,
   // 美区/加区用户会先看到一个 € 开头的假价格,再"跳"成真币种。
-  if (!catalog) return { planByCode: {}, addonByCode: {}, currency: "" };
+  if (!catalog) return { planByCode: {}, addonByCode: {}, currency: "", currencyEstimated: false };
   const planByCode: Record<string, CatalogPlan> = {};
   for (const p of catalog.plans || []) planByCode[p.planCode] = p;
   const addonByCode: Record<string, CatalogPlan> = {};
   for (const a of catalog.addons || []) addonByCode[a.planCode] = a;
-  return { planByCode, addonByCode, currency: catalog.locale?.currencyCode || "" };
+  // 目录已到手但没报 currencyCode（极少见）：按子公司查表补，并标记为推断值。
+  // 比留空有用（用户至少有符号），但必须让用户知道这是按区域推出来的。
+  const reported = catalog.locale?.currencyCode || "";
+  const currency = reported || currencyForSubsidiary(catalog.locale?.subsidiary);
+  return { planByCode, addonByCode, currency, currencyEstimated: !reported && !!currency };
 }
 
 /** 月费:取 intervalUnit=month, interval=1, mode=default 且不是安装费的那条。
@@ -393,6 +401,7 @@ export function computePrice(item: AvailabilityItem | undefined, idx: CatalogInd
     installPrice,
     installTax,
     currency: idx.currency,
+    currencyEstimated: idx.currencyEstimated,
   };
 }
 
@@ -455,11 +464,25 @@ export function computePriceFromOptions(
     installPrice,
     installTax,
     currency: idx.currency,
+    currencyEstimated: idx.currencyEstimated,
   };
 }
 
-/** 友好显示：€42.99 / 月。币种缺失时只给数字（formatMoney 不会编一个货币符号出来） */
-export function formatPrice(p: PriceInfo | undefined | null): string {
+/**
+ * 友好显示：€42.99 / 月（+ 可选的人民币参考价）。
+ *
+ * cnyRate 由调用方从 useMoneyFormat().rateFor() 取来传入；不传就只显示原币。
+ * 币种缺失时只给数字（formatMoney 不会编一个货币符号出来）。
+ */
+export function formatPrice(
+  p: PriceInfo | undefined | null,
+  opts: { cnyRate?: number | null } = {},
+): string {
   if (!p) return "—";
-  return `${formatMoney(p.price, p.currency)} ${i18n.t("commons.perMonthShort")}`;
+  return formatMoneyWithCny(p.price, p.currency, {
+    cnyRate: opts.cnyRate,
+    // 币种是按子公司推断的：标注紧跟金额，别让"€"看起来像 OVH 明确报的价。
+    estimated: p.currencyEstimated,
+    unit: " " + i18n.t("commons.perMonthShort"),
+  });
 }

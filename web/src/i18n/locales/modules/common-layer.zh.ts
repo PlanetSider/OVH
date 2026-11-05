@@ -145,6 +145,7 @@ export const commonLayerZh = {
     },
     authExpired: "登录状态已失效,请重新输入 API 密钥",
     currencyUnknownHint: "OVH 未返回币种(currencyCode 为空)。币种按账户子公司定:US/WE/WS=USD、CA/QC=CAD、SG=SGD、AU=AUD、GB=GBP,不能默认按欧元读。",
+    cnyEstimated: "（按区域估算）",
     perMonthShort: "/ 月",
     githubTitle: "在 GitHub 上查看本项目(反馈问题、看更新说明)",
     dc: {

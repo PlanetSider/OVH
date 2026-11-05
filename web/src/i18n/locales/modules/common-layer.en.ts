@@ -151,6 +151,7 @@ const pack: CommonLayerPack = {
     },
     authExpired: "Your session has expired. Please re-enter the API key.",
     currencyUnknownHint: "OVH did not return a currency (empty currencyCode). Currency follows the account subsidiary: US/WE/WS=USD, CA/QC=CAD, SG=SGD, AU=AUD, GB=GBP — never assume EUR by default.",
+    cnyEstimated: " (estimated by region)",
     perMonthShort: "/ mo",
     githubTitle: "View this project on GitHub (report issues, read release notes)",
     dc: {

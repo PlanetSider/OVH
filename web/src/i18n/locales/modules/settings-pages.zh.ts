@@ -17,6 +17,7 @@ export const settingsPagesZh = {
       appearance: "外观",
       accounts: "OVH 账户",
       purchase: "抢购",
+      display: "价格显示",
       telegram: "Telegram",
       notify: "通知通道",
       app: "App 配对",
@@ -42,6 +43,15 @@ export const settingsPagesZh = {
       onlyNewBold: "之后新建",
       onlyNewPost:
         "的任务。已经在队列里跑的任务各自带着自己的间隔，要改单个任务去「抢购队列」页点那条任务的秒数。",
+    },
+    display: {
+      title: "价格显示",
+      bothLabel: "原币 + 人民币参考价",
+      bothDesc: "在原币价格后附 ≈¥（按每日汇率估算），界面与通知同时生效",
+      offLabel: "只显示原币",
+      offDesc: "完全不请求汇率，通知里也不附带人民币",
+      footnote:
+        "参考价只用来判断量级；实际扣款按 OVH 账户币种结算，信用卡可能另有汇兑成本。",
     },
     appearance: {
       system: "跟随系统",

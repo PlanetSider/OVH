@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/ovh-buy/server/internal/catalog"
+	"github.com/ovh-buy/server/internal/exchange"
 	"github.com/ovh-buy/server/internal/numconv"
 	"github.com/ovh-buy/server/internal/orderterm"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 // optionsFromConfig 取本次配置组合要询价的 addon 列表
@@ -262,13 +264,25 @@ func (m *Monitor) GetPriceInfoText(planCode, datacenter string, configInfo map[s
 	accountID := accountIDFromConfig(configInfo)
 	subsidiary := m.subsidiaryOfPricingAccount(accountID)
 	currency, _ := prices["currencyCode"].(string)
+	// estimated 表示币种不是这次询价明确返回的，而是推断出来的。
+	// 推断值仍然展示（用户原本连符号都没有），但人民币参考价后面必须
+	// 注明"按区域估算" —— 判断错了用户能看出来，而不是看起来精确。
+	estimated := false
 	switch {
 	case currency == "":
+		// 第一优先：目录缓存里 OVH 自己给的 locale 币种。
+		// 它不是本次询价的返回值，但来源仍是 OVH，比本地表可靠。
+		currency = catalog.CachedCurrency(subsidiary)
+		estimated = currency != ""
+		// 第二优先：本地子公司→币种表（作者实测快照，最后兜底）。
+		if currency == "" {
+			currency = currencyForSubsidiary(subsidiary)
+			estimated = currency != ""
+		}
 		// OVH 没回币种时按询价账户的子公司兜底,而不是一律当欧元:
 		// 同一条通知在美区账户下是 USD、加区账户下是 CAD,印成 "€" 会误导下单决策。
-		currency = currencyForSubsidiary(subsidiary)
-		m.state.Logger.Debug(fmt.Sprintf("价格接口未返回 currencyCode,按账户(子公司 %s)兜底为 %q",
-			subsidiary, currency), "monitor")
+		m.state.Logger.Debug(fmt.Sprintf("价格接口未返回 currencyCode,按账户(子公司 %s)兜底为 %q（预估=%v）",
+			subsidiary, currency, estimated), "monitor")
 	default:
 		// 币种是"这次询价到底落在哪个大区"的免费探针:用美区账户询价却回了 EUR,
 		// 说明询价账户和查库存的账户不是同一个(或账户 zone 配错了)。
@@ -280,14 +294,46 @@ func (m *Monitor) GetPriceInfoText(planCode, datacenter string, configInfo map[s
 		}
 	}
 	if v, ok := numconv.ToFloat64(withTaxRaw); ok {
+		// unit 同时用于原币文本和人民币文本，保证两者周期写法一致。
+		unit := "/月"
 		text := formatMoney(currency, v)
 		if duration, _ := configInfo["duration"].(string); duration != "" && duration != "P1M" {
-			text = formatAmount(currency, v) + " / " + orderterm.Label(duration)
+			unit = " / " + orderterm.Label(duration)
+			text = formatAmount(currency, v) + unit
+		}
+		if cny := m.cnySuffix(currency, v, unit, estimated); cny != "" {
+			text += " · " + cny
 		}
 		m.state.Logger.Debug("价格获取成功: "+text, "monitor")
 		return text
 	}
 	return ""
+}
+
+// cnySuffix 拼"≈¥300/月"（或 /1年）这一截；不该显示时返回空串。
+//
+// 三条规则，任何一条不满足都宁可不显示：
+//   - 用户在设置里关掉了人民币参考价（displayMode=off）；
+//   - 币种为空 —— 没有币种就没有可换算的金额；
+//   - 汇率服务未就绪 / 已过期 / 该币种不在表内。
+//
+// 绝不返回 "≈¥0" 或 "¥--" 占位：那比不显示更像一个真实报价。
+func (m *Monitor) cnySuffix(currency string, amount float64, unit string, estimated bool) string {
+	if types.NormalizeDisplayMode(m.state.Config.Get().DisplayMode) == types.DisplayModeOff {
+		return ""
+	}
+	if currency == "" {
+		return ""
+	}
+	cny, ok := exchange.CNY(currency, amount)
+	if !ok {
+		return ""
+	}
+	s := "≈" + exchange.FormatCNY(cny) + unit
+	if estimated {
+		s += "（按区域估算）"
+	}
+	return s
 }
 
 // getPriceWithTimeout 带 30 秒超时的询价
@@ -330,6 +376,11 @@ func (m *Monitor) installPriceText(planCode, accountID string, options []string)
 		return ""
 	}
 	text := formatAmount(p.Currency, p.Install)
+	// 安装费是一次性的，没有"/月"后缀，人民币部分同样不带周期。
+	// 币种来自目录（OVH 明确返回），所以不加"按区域估算"。
+	if cny := m.cnySuffix(p.Currency, p.Install, "", false); cny != "" {
+		text += " · " + cny
+	}
 	if p.Partial {
 		// 有 addon 不在目录里 —— 这个数字偏低。说出来,别让用户按一个错的预期下单。
 		text += "（部分 addon 未计入，实际可能更高）"

@@ -13,7 +13,7 @@ import {
   type EngagementPricing,
 } from "@/hooks/use-server-control";
 import { toast } from "sonner";
-import { formatMoney } from "@/lib/money";
+import { useMoneyFormat } from "@/hooks/use-money-format";
 import { Trans, useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { errorMessage } from "@/components/common/LoadFailed";
@@ -375,7 +375,9 @@ function PricingRow({
 }) {
   const { t } = useTranslation();
   // 币种一律用 OVH 给的 currencyCode。以前兜底 "USD" —— 合同期这套端点三区都有,
-  // 欧区账户的价格会被硬贴上 USD 标签。拿不到就只显示数字(formatMoney 不编货币符号)。
+  // 欧区账户的价格会被硬贴上 USD 标签。拿不到就只显示数字(不编货币符号)。
+  // 人民币参考价走同一个 hook：开关关闭或汇率不可用时自动只返回原币。
+  const { formatPrice } = useMoneyFormat();
   const currency = pricing.price?.currencyCode || "";
   const priceValue = pricing.price?.value ?? 0;
   // 承诺期总长(月),只用于标题展示
@@ -405,9 +407,9 @@ function PricingRow({
     isUpfront && pricing.price?.text
       ? pricing.price.text
       : totalValue > 0
-        ? formatMoney(totalValue, currency)
+        ? formatPrice(totalValue, currency)
         : "—";
-  const perMonthText = perMonth > 0 ? t("maint.engagement.perMonth", { price: formatMoney(perMonth, currency) }) : "";
+  const perMonthText = perMonth > 0 ? t("maint.engagement.perMonth", { price: formatPrice(perMonth, currency) }) : "";
 
   const friendlyTitle = humanizeDescription(t, pricing.description, months, isUpfront);
 

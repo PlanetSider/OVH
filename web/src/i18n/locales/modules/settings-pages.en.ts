@@ -25,6 +25,7 @@ const pack: SettingsPagesPack = {
       appearance: "Appearance",
       accounts: "OVH accounts",
       purchase: "Sniping",
+      display: "Price display",
       telegram: "Telegram",
       notify: "Notification channels",
       app: "App pairing",
@@ -50,6 +51,16 @@ const pack: SettingsPagesPack = {
       onlyNewBold: "created afterwards",
       onlyNewPost:
         ". Tasks already running in the queue carry their own interval; to change a single task, tap its seconds on the Order Queue page.",
+    },
+    display: {
+      title: "Price display",
+      bothLabel: "Original currency + CNY reference",
+      bothDesc:
+        "Append an ≈¥ estimate (daily rate) after the original price; applies to both the UI and notifications",
+      offLabel: "Original currency only",
+      offDesc: "No exchange-rate requests at all, and no CNY in notifications",
+      footnote:
+        "The reference price only helps gauge the magnitude. You are actually charged in the OVH account currency; your card may add conversion fees.",
     },
     appearance: {
       system: "Follow system",

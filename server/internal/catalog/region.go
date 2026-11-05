@@ -157,6 +157,25 @@ var (
 	regionCacheCall = map[string]*catalogCall{}       // 在途拉取(singleflight)
 )
 
+// CachedCurrency 返回该子公司目录缓存里记录的币种（OVH 公开目录的
+// locale.currencyCode），缓存未命中时返回空串。
+//
+// 刻意不触发加载：调用方是价格文案与通知（只想要一个货币代码），
+// 为它去拉 ~10MB 的公开目录代价完全不成比例；拿不到就交给下一层兜底
+// —— 空串在调用方那里意味着"不确定"，比猜一个币种安全。
+func CachedCurrency(subsidiary string) string {
+	key := strings.ToUpper(strings.TrimSpace(subsidiary))
+	if key == "" {
+		return ""
+	}
+	regionCacheMu.Lock()
+	defer regionCacheMu.Unlock()
+	if c, ok := regionCache[key]; ok && c != nil {
+		return c.currency
+	}
+	return ""
+}
+
 // RegionForPlan 返回该 (账户子公司, planCode, 机房) 下应该提交的 region 值。
 // 返回空串表示该 plan 不需要 region 配置(目录里没有这项)。
 // 拿不到目录时返回 error,调用方可以退回 ovh.RegionForDC 的静态兜底。

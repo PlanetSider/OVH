@@ -67,6 +67,7 @@ function orderStatusView(item: PurchaseHistory): {
   }
 }
 import { currencyUnknownHint } from "@/lib/money";
+import { useMoneyFormat } from "@/hooks/use-money-format";
 
 /** 抢购历史：表格 + 搜索 + 状态过滤 */
 export const Route = createFileRoute("/history")({
@@ -84,15 +85,17 @@ export const Route = createFileRoute("/history")({
 function HistoryPrice({ item, strike }: { item: PurchaseHistory; strike: boolean }) {
   const { t } = useTranslation();
   const value = item.price?.withTax;
-  if (value == null) return <span className="text-muted-foreground">—</span>;
   const currency = (item.price?.currencyCode || "").trim();
+  // 成交价旁边附人民币参考价；开关关闭/汇率不可用时 formatPrice 只返回原币。
+  const { formatPrice } = useMoneyFormat();
+  if (value == null) return <span className="text-muted-foreground">—</span>;
   return (
     <span
       className={`font-mono font-medium text-success ${strike ? "line-through" : ""}`}
       title={currency ? undefined : currencyUnknownHint()}
     >
-      {value}
-      {currency ? ` ${currency}` : <span className="text-muted-foreground">{t("history.currencyUnknown")}</span>}
+      {formatPrice(value, currency)}
+      {!currency && <span className="text-muted-foreground">{t("history.currencyUnknown")}</span>}
     </span>
   );
 }

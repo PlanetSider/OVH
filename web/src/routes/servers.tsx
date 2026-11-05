@@ -25,6 +25,7 @@ import { useServers, useAddToMonitor, type ServerPlan } from "@/hooks/use-server
 import { useAccountInfo } from "@/hooks/use-account";
 import { useCreateQueueItem } from "@/hooks/use-queue";
 import { useCacheInfo } from "@/hooks/use-settings";
+import { useMoneyFormat } from "@/hooks/use-money-format";
 import { useDefaultAccount } from "@/hooks/use-accounts";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useEffect } from "react";
@@ -50,7 +51,7 @@ import { groupOptions, type OptionGroupKey } from "@/lib/option-groups";
 import { OptionGroupSection } from "@/components/common/OptionGroupSection";
 import { lookupDcStatus, datacentersForPlan } from "@/lib/datacenters";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
-import { formatMoney, currencyUnknownHint, comparePrices } from "@/lib/money";
+import { currencyUnknownHint, comparePrices } from "@/lib/money";
 import { useAccounts, findAccountByID } from "@/hooks/use-accounts";
 import { endpointRegion, regionLabel } from "@/lib/ovh-regions";
 import { clampOrderPlan, MAX_ORDER_QUANTITY, MAX_ORDER_FANOUT } from "@/lib/order-limits";
@@ -371,6 +372,8 @@ function ServerCard({
 }) {
   const { t } = useTranslation();
   const addMon = useAddToMonitor();
+  // 汇率开关/可用性统一由 hook 判断：关掉或没取到汇率时 formatPrice 只返回原币
+  const { rateFor } = useMoneyFormat();
 
   // 静态可用性兜底（首次渲染、实时还没回来时也有数据）
   const staticDcMap = useMemo(() => {
@@ -420,7 +423,7 @@ function ServerCard({
             <p className="text-[12px] text-muted-foreground truncate mt-0.5">{server.name}</p>
             <div className="text-[13px] font-semibold mt-1 tabular-nums">
               {price ? (
-                formatPrice(price)
+                formatPrice(price, { cnyRate: rateFor(price.currency) })
               ) : (
                 <PriceFallback loading={priceLoading} subsidiary={subsidiary} />
               )}
@@ -525,6 +528,7 @@ function DetailContent({
 }) {
   const { t } = useTranslation();
   const addMon = useAddToMonitor();
+  const { rateFor, formatPrice: formatAmount } = useMoneyFormat();
   const create = useCreateQueueItem();
   const defaultAcc = useDefaultAccount();
   const { data: accounts } = useAccounts();
@@ -690,7 +694,7 @@ function DetailContent({
             </div>
             <div className="text-2xl font-bold tabular-nums mt-0.5">
               {price ? (
-                formatPrice(price)
+                formatPrice(price, { cnyRate: rateFor(price.currency) })
               ) : (
                 <span className="text-base">
                   <PriceFallback loading={priceLoading} subsidiary={subsidiary} />
@@ -701,7 +705,7 @@ function DetailContent({
           {price && (
             <div className="text-right text-[11px] text-muted-foreground space-y-0.5 tabular-nums">
               {price.installPrice > 0 && (
-                <div>{t("servers.detail.installFee", { amount: formatMoney(price.installPrice, price.currency) })}</div>
+                <div>{t("servers.detail.installFee", { amount: formatAmount(price.installPrice, price.currency) })}</div>
               )}
               {/* 币种取目录 locale.currencyCode 原值;拿不到就明说未知,不写死 EUR */}
               <div title={price.currency ? undefined : currencyUnknownHint()}>

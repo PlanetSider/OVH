@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw, Radio, Network, Fingerprint, ShieldAlert, Radar, Ban, Activity, Timer, Palette, Sun, Moon, Monitor } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw, Radio, Network, Fingerprint, ShieldAlert, Radar, Ban, Activity, Timer, Palette, Eye, Sun, Moon, Monitor } from "lucide-react";
 import { useTheme } from "@/hooks/use-theme";
 import { Section } from "@/routes/settings-sections";
 import { AppPairingSection } from "@/components/settings/AppPairingSection";
@@ -73,6 +73,7 @@ export const Route = createFileRoute("/settings")({
 const SECTIONS = [
   { id: "password", icon: KeyRound, label: "settings.sections.password" },
   { id: "appearance", icon: Palette, label: "settings.sections.appearance" },
+  { id: "display", icon: Eye, label: "settings.sections.display" },
   { id: "accounts", icon: Globe, label: "settings.sections.accounts" },
   { id: "purchase", icon: Timer, label: "settings.sections.purchase" },
   { id: "telegram", icon: Send, label: "settings.sections.telegram" },
@@ -206,6 +207,8 @@ function SettingsPage() {
               </Section>
             ) : active === "appearance" ? (
               <AppearanceSection />
+            ) : active === "display" ? (
+              <DisplaySection form={form} set={set} />
             ) : active === "app" ? (
               <AppPairingSection />
             ) : active === "accounts" ? (
@@ -291,6 +294,62 @@ function PurchaseSection({
       <div className="rounded-2xl border border-border bg-secondary/30 px-4 py-3 text-[12px] text-muted-foreground">
         {t("settings.purchase.onlyNewPre")}<b className="text-foreground">{t("settings.purchase.onlyNewBold")}</b>{t("settings.purchase.onlyNewPost")}
       </div>
+    </Section>
+  );
+}
+
+/**
+ * 价格显示：原币 + 人民币参考价 / 只显示原币。
+ *
+ * 开关存后端 Config 而不是 localStorage —— 同一份判据还要给通知
+ * (TG / 飞书 / webhook)使用。两处各存一份必然出现"界面关了、通知里还带着
+ * ≈¥"的情况，而用户没有任何办法解释这种不一致。
+ */
+function DisplaySection({
+  form,
+  set,
+}: {
+  form: SettingsConfig;
+  set: <K extends keyof SettingsConfig>(k: K, v: SettingsConfig[K]) => void;
+}) {
+  const { t } = useTranslation();
+  // 空/未知一律按 both，与后端 types.NormalizeDisplayMode 同一口径。
+  const current = form.displayMode === "off" ? "off" : "both";
+  const options = [
+    { value: "both", label: t("settings.display.bothLabel"), desc: t("settings.display.bothDesc") },
+    { value: "off", label: t("settings.display.offLabel"), desc: t("settings.display.offDesc") },
+  ];
+  return (
+    <Section title={t("settings.display.title")}>
+      <div className="space-y-2">
+        {options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => set("displayMode", o.value)}
+            className={`w-full flex items-start gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${
+              current === o.value
+                ? "border-foreground/60 bg-accent text-accent-foreground"
+                : "border-border hover:bg-accent/50"
+            }`}
+          >
+            <span className="flex-1 min-w-0">
+              <span className="block text-[13px] font-medium">{o.label}</span>
+              <span
+                className={`block text-[11px] ${
+                  current === o.value ? "text-accent-foreground/70" : "text-muted-foreground"
+                }`}
+              >
+                {o.desc}
+              </span>
+            </span>
+            {current === o.value && (
+              <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-accent-foreground/70" />
+            )}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">{t("settings.display.footnote")}</p>
     </Section>
   );
 }

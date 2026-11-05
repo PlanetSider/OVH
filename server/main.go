@@ -24,6 +24,7 @@ import (
 	"github.com/ovh-buy/server/internal/catalog"
 	"github.com/ovh-buy/server/internal/config"
 	"github.com/ovh-buy/server/internal/db"
+	"github.com/ovh-buy/server/internal/exchange"
 	"github.com/ovh-buy/server/internal/handlers"
 	"github.com/ovh-buy/server/internal/logger"
 	"github.com/ovh-buy/server/internal/monitor"
@@ -248,6 +249,9 @@ func main() {
 		api.POST("/settings", handlers.SaveSettings(state))
 		api.POST("/verify-auth", handlers.VerifyAuth(state))
 		api.GET("/endpoint-config", handlers.EndpointConfig(state))
+
+		// 汇率参考价：只读后台快照，不在这里抓取
+		api.GET("/exchange/rates", handlers.GetExchangeRates())
 
 		// Logs / stats
 		api.GET("/logs", handlers.GetLogs(state))
@@ -587,6 +591,10 @@ func main() {
 	mountEmbeddedUI(r)
 
 	// 后台线程
+	// 汇率参考价：启动先拉一次，之后每天本地 0 点刷新。
+	// 放在后台线程区而不是路由注册前，是因为它要访问 OVH 之外的公网，
+	// 失败只影响"人民币参考价"这一装饰层，绝不能让启动流程失败。
+	exchange.Init(state)
 	go purchase.ProcessQueueLoop(state)
 	// 定时刷新历史里未到终态订单的支付状态(付款发生在下单之后的任意时刻)
 	go purchase.OrderStatusLoop(state)

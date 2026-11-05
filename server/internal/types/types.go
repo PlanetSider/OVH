@@ -27,7 +27,20 @@ type Config struct {
 	// 单独一个值是因为场景不同:货刚出现那一刻要抢,窗口可能只有几十秒,
 	// 所以默认比普通任务激进得多;但太密会吃 OVH 的 429,这里交给用户自己权衡。
 	QuickOrderRetryInterval int `json:"quickOrderRetryInterval,omitempty"`
+
+	// DisplayMode 是否显示人民币参考价:"both"(原币 + ≈¥) / "off"(只看原币)。
+	//
+	// 存进 Config 而不是前端 localStorage,是因为同一份判据还要被后端通知
+	// (TG / 飞书 / webhook)使用 —— 界面上关了人民币、通知里却还带着,用户
+	// 无法解释这种不一致。空值/未知值一律按 "both" 处理,兼容旧配置。
+	DisplayMode string `json:"displayMode,omitempty"`
 }
+
+// DisplayMode 的合法取值。
+const (
+	DisplayModeBoth = "both"
+	DisplayModeOff  = "off"
+)
 
 // 重试间隔的默认值与合法区间(秒)。
 const (
@@ -78,6 +91,17 @@ func ClampRetryInterval(v, fallback int) int {
 	return v
 }
 
+// NormalizeDisplayMode 只认 off / both，其余（含空/旧配置）一律回退 both。
+// 保存设置、读取配置、通知路径共用同一个判据。
+func NormalizeDisplayMode(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case DisplayModeOff:
+		return DisplayModeOff
+	default:
+		return DisplayModeBoth
+	}
+}
+
 // DefaultConfig 默认配置
 func DefaultConfig() Config {
 	return Config{
@@ -86,6 +110,7 @@ func DefaultConfig() Config {
 		Zone:                    "IE",
 		DefaultRetryInterval:    DefaultTaskRetryInterval,
 		QuickOrderRetryInterval: DefaultQuickRetryInterval,
+		DisplayMode:             DisplayModeBoth,
 	}
 }
 
