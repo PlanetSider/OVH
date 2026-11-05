@@ -261,6 +261,9 @@ func main() {
 		// 手动填写的应用靠这个 6 位码绑定接收人（扫码路径会自动绑定）。
 		api.POST("/feishu/binding-code", handlers.CreateFeishuBindingCode(state))
 		api.POST("/feishu/unbind", handlers.UnbindFeishu(state))
+		// 长连接状态：飞书是主动连出去的，断线没有入站请求可依靠，
+		// 设置页只能靠这个接口判断"命令/下单/告警是不是一起静默失效了"。
+		api.GET("/feishu/status", handlers.GetFeishuStatus(state))
 
 		// Logs / stats
 		api.GET("/logs", handlers.GetLogs(state))

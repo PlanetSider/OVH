@@ -111,3 +111,45 @@ export function useUnbindFeishu() {
     onError: (e: any) => toast.error(apiMessage(e) || i18n.t("hooksMsg.feishu.unbindFailed")),
   });
 }
+
+export interface FeishuBotStatus {
+  enabled: boolean;
+  /** App ID + App Secret 都已保存 */
+  configured: boolean;
+  /** 已绑定接收人 */
+  bound: boolean;
+  /** 长连接 goroutine 在跑 */
+  started: boolean;
+  /** 已收到 OnReady —— 这才是真的连上了 */
+  connected: boolean;
+  /** RFC3339 */
+  connectedAt?: string;
+  /** 最后一次收到消息或卡片回调，RFC3339 */
+  lastEventAt?: string;
+  lastError?: string;
+  appId?: string;
+  domain?: string;
+}
+
+/**
+ * 长连接状态。
+ *
+ * 飞书是服务端主动连出去的，没有入站请求：连接断了以后命令、下单、提醒会
+ * 一起静默失效，界面上不会有第二处迹象。所以和 Telegram 的长轮询一样，
+ * 让它自己每 10 秒刷一次，而不是等用户手动点。
+ */
+export function useFeishuStatus() {
+  return useQuery({
+    queryKey: ["feishu", "status"],
+    queryFn: async () => {
+      const res = await api.get<{ success: boolean; status: FeishuBotStatus; error?: string }>(
+        "/feishu/status"
+      );
+      if (!res.data?.success) {
+        throw new Error(res.data?.error || i18n.t("settings.feishu.statusFailed"));
+      }
+      return res.data.status;
+    },
+    refetchInterval: 10_000,
+  });
+}

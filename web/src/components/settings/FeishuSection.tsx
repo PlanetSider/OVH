@@ -9,18 +9,28 @@
  * 扫码 ≠ 能用:应用还要在开放平台开事件订阅(长连接)并创建版本发布,
  * 否则机器人收不到任何消息 —— 这段说明必须留在界面上,不能只在文档里。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { AlertTriangle, KeyRound, Link2, MessageSquare, QrCode, RefreshCw, Unlink } from "lucide-react";
+import { AlertTriangle, CheckCircle2, KeyRound, Link2, MessageSquare, QrCode, RefreshCw, Unlink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Section } from "@/routes/settings-sections";
+import { LoadFailedBanner } from "@/components/common/LoadFailed";
+import { Skeleton } from "@/components/common/Skeleton";
+import { Chip } from "@/components/common/Chip";
+import { fmtDateTime } from "@/i18n/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useCreateFeishuBindingCode, useFeishuRegistrationPoll, useStartFeishuRegistration, useUnbindFeishu } from "@/hooks/use-feishu";
+import {
+  useCreateFeishuBindingCode,
+  useFeishuRegistrationPoll,
+  useFeishuStatus,
+  useStartFeishuRegistration,
+  useUnbindFeishu,
+} from "@/hooks/use-feishu";
 import { qk } from "@/lib/query";
 import type { SettingsConfig } from "@/hooks/use-settings";
 import { cn } from "@/lib/utils";
@@ -67,6 +77,20 @@ export function FeishuSection({
   const bound = (form.feishuBoundOpenId || "").trim();
   const enabled = form.feishuEnabled === true;
 
+  // 长连接状态:用后端真实连接态,不要用表单里的 enabled 猜 —— 表单改了还没保存时
+  // 连接还是旧的,那正是用户最容易误判"我已经开了怎么没反应"的时刻。
+  const status = useFeishuStatus();
+  const bot = status.data;
+  const connection = !bot?.enabled
+    ? "disabled"
+    : !bot.configured
+      ? "unconfigured"
+      : bot.connected
+        ? "connected"
+        : bot.started
+          ? "connecting"
+          : "stopped";
+
   // 扫码完成的三种终态:成功回填表单,取消/过期收掉二维码并提示。
   // error 不在这里处理 —— 后端保留会话可重试,二维码继续显示。
   useEffect(() => {
@@ -111,6 +135,118 @@ export function FeishuSection({
         <b>{t("settings.feishu.introBold")}</b>
         {t("settings.feishu.introPost")}
       </p>
+
+      {/* 长连接状态:飞书是服务端主动连出去的,断了没有入站请求可依靠 ——
+          这里不显示,用户就完全没有反馈 */}
+      <div className="rounded-2xl border border-border p-4 space-y-2.5 text-[13px]">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-[13px] font-medium flex items-center gap-1.5">
+            <MessageSquare className="w-3.5 h-3.5 text-muted-foreground" />
+            {t("settings.feishu.statusTitle")}
+          </h3>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => status.refetch()}
+            disabled={status.isFetching}
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", status.isFetching && "animate-spin")} />
+            {t("common.refresh")}
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          {t("settings.feishu.statusDesc")}
+        </p>
+
+        {status.isPending ? (
+          <Skeleton className="h-16 rounded-xl" />
+        ) : status.isError ? (
+          <LoadFailedBanner
+            title={t("settings.feishu.statusFailed")}
+            error={status.error}
+            onRetry={() => status.refetch()}
+          />
+        ) : (
+          <>
+            <InfoRow
+              label={t("settings.feishu.connectionLabel")}
+              value={
+                connection === "connected" ? (
+                  <Chip tone="success">
+                    <CheckCircle2 className="w-3 h-3" />
+                    {t("settings.feishu.statusConnected")}
+                  </Chip>
+                ) : connection === "connecting" ? (
+                  <Chip tone="warning">
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    {t("settings.feishu.statusConnecting")}
+                  </Chip>
+                ) : connection === "stopped" ? (
+                  <Chip tone="danger">
+                    <AlertTriangle className="w-3 h-3" />
+                    {t("settings.feishu.statusStopped")}
+                  </Chip>
+                ) : connection === "unconfigured" ? (
+                  <Chip>{t("settings.feishu.statusUnconfigured")}</Chip>
+                ) : (
+                  <Chip>{t("settings.feishu.statusDisabled")}</Chip>
+                )
+              }
+            />
+            <InfoRow
+              label={t("settings.feishu.lastConnected")}
+              value={
+                bot?.connectedAt ? (
+                  <span className="font-mono text-[12px]">{fmtDateTime(bot.connectedAt)}</span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    {t("settings.feishu.neverConnected")}
+                  </span>
+                )
+              }
+            />
+            <InfoRow
+              label={t("settings.feishu.lastEvent")}
+              value={
+                bot?.lastEventAt ? (
+                  <span className="font-mono text-[12px]">{fmtDateTime(bot.lastEventAt)}</span>
+                ) : (
+                  <span className="text-muted-foreground">{t("settings.feishu.neverEvent")}</span>
+                )
+              }
+            />
+            <InfoRow
+              label={t("settings.feishu.appIdLabel")}
+              value={<span className="font-mono text-[12px]">{bot?.appId || "—"}</span>}
+            />
+            <InfoRow
+              label={t("settings.feishu.domainLabel")}
+              value={
+                bot?.domain === "lark"
+                  ? t("settings.feishu.domainLark")
+                  : t("settings.feishu.domainFeishu")
+              }
+            />
+            {bot?.lastError ? (
+              <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-[12px] flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="font-semibold text-destructive">
+                    {t("settings.feishu.lastErrorTitle")}
+                  </p>
+                  <p className="mt-0.5 break-words">{bot.lastError}</p>
+                </div>
+              </div>
+            ) : null}
+            {connection === "stopped" && (
+              <p className="text-[11px] text-destructive">
+                {t("settings.feishu.notConnectedWarning")}
+              </p>
+            )}
+          </>
+        )}
+      </div>
 
       {/* 扫码创建 */}
       <div className="rounded-2xl border border-border p-4 space-y-3">
@@ -278,5 +414,15 @@ export function FeishuSection({
         </p>
       </div>
     </Section>
+  );
+}
+
+/** 状态卡片的一行:左灰标签、右对齐值。settings.tsx 里那份是私有的,不能直接复用 */
+function InfoRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex justify-between items-start gap-3">
+      <span className="text-muted-foreground flex-shrink-0">{label}</span>
+      <span className="font-medium text-right min-w-0">{value}</span>
+    </div>
   );
 }

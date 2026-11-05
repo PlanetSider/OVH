@@ -74,7 +74,7 @@ func buildCNYRatios(usdRates map[string]float64) map[string]float64 {
 
 // FormatCNY 参考价统一取整。
 //
-// 保留两位小数会制造"同价不同 ¥"的假精度：€42.99 与 €43.00 都是 ≈¥333.5x，
+// 保留两位小数会制造"同价不同 ¥"的假精度：€42.99 与 €43.00 都是 ≈ ¥333.5x，
 // 四舍五入后一个 334 一个 334 还好，差一分钱就变成 333/334，看起来像两档价格。
 func FormatCNY(v float64) string {
 	if v <= 0 {

@@ -302,7 +302,7 @@ func (m *Monitor) GetPriceInfoText(planCode, datacenter string, configInfo map[s
 			text = formatAmount(currency, v) + unit
 		}
 		if cny := m.cnySuffix(currency, v, unit, estimated); cny != "" {
-			text += " · " + cny
+			text += " ≈ " + cny
 		}
 		m.state.Logger.Debug("价格获取成功: "+text, "monitor")
 		return text
@@ -310,14 +310,14 @@ func (m *Monitor) GetPriceInfoText(planCode, datacenter string, configInfo map[s
 	return ""
 }
 
-// cnySuffix 拼"≈¥300/月"（或 /1年）这一截；不该显示时返回空串。
+// cnySuffix 拼"≈ ¥300/月"（或 /1年）这一截；不该显示时返回空串。
 //
 // 三条规则，任何一条不满足都宁可不显示：
 //   - 用户在设置里关掉了人民币参考价（displayMode=off）；
 //   - 币种为空 —— 没有币种就没有可换算的金额；
 //   - 汇率服务未就绪 / 已过期 / 该币种不在表内。
 //
-// 绝不返回 "≈¥0" 或 "¥--" 占位：那比不显示更像一个真实报价。
+// 绝不返回 "≈ ¥0" 或 "¥--" 占位：那比不显示更像一个真实报价。
 func (m *Monitor) cnySuffix(currency string, amount float64, unit string, estimated bool) string {
 	if types.NormalizeDisplayMode(m.state.Config.Get().DisplayMode) == types.DisplayModeOff {
 		return ""
@@ -329,7 +329,7 @@ func (m *Monitor) cnySuffix(currency string, amount float64, unit string, estima
 	if !ok {
 		return ""
 	}
-	s := "≈" + exchange.FormatCNY(cny) + unit
+	s := "≈ " + exchange.FormatCNY(cny) + unit
 	if estimated {
 		s += "（按区域估算）"
 	}
@@ -379,7 +379,7 @@ func (m *Monitor) installPriceText(planCode, accountID string, options []string)
 	// 安装费是一次性的，没有"/月"后缀，人民币部分同样不带周期。
 	// 币种来自目录（OVH 明确返回），所以不加"按区域估算"。
 	if cny := m.cnySuffix(p.Currency, p.Install, "", false); cny != "" {
-		text += " · " + cny
+		text += " ≈ " + cny
 	}
 	if p.Partial {
 		// 有 addon 不在目录里 —— 这个数字偏低。说出来,别让用户按一个错的预期下单。

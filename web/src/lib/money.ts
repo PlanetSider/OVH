@@ -106,7 +106,7 @@ export interface CnyOptions {
 }
 
 /**
- * 原币金额 + 可选的人民币参考价，例如 `€42.99 · ≈¥307`。
+ * 原币金额 + 可选的人民币参考价，例如 `€42.99 ≈ ¥307`。
  *
  * 失败姿态只有一个：**只显示原币**。汇率缺失、币种为空、金额非正数时，
  * 绝不返回 `≈¥--` / `≈¥0` 这样的占位——那看起来像一个真实报价，比不显示危险。
@@ -123,5 +123,5 @@ export function formatMoneyWithCny(
   const cny = formatCNY(value * rate);
   if (!cny) return base;
   const note = opts.estimated ? i18n.t("commons.cnyEstimated") : "";
-  return `${base}${opts.unit ?? ""} · ≈${cny}${opts.unit ?? ""}${note}`;
+  return `${base}${opts.unit ?? ""} ≈ ${cny}${opts.unit ?? ""}${note}`;
 }

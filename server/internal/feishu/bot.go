@@ -7,6 +7,7 @@ package feishu
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,12 +31,16 @@ const (
 // 想重连必须新建 client + channel。所以配置变更/断开重连一律走 Reconfigure,
 // 而不是在旧对象上再 Start 一次。
 type Bot struct {
-	mu      sync.Mutex
-	state   *app.State
-	ch      channeltypes.Channel
-	cancel  context.CancelFunc
-	done    chan struct{}
-	started bool
+	mu          sync.Mutex
+	state       *app.State
+	ch          channeltypes.Channel
+	cancel      context.CancelFunc
+	done        chan struct{}
+	started     bool
+	connected   bool
+	connectedAt time.Time
+	lastEventAt time.Time
+	lastError   string
 }
 
 var (
@@ -91,18 +96,22 @@ func (b *Bot) Start() {
 	ch := channel.NewChannel(client, wsClient)
 
 	ch.OnReady(func() {
+		b.markConnected()
 		b.state.Logger.Info("飞书长连接已就绪", "feishu")
 	})
 	ch.OnReconnecting(func() {
 		b.state.Logger.Warn("飞书长连接正在重连", "feishu")
 	})
 	ch.OnReconnected(func() {
+		b.markConnected()
 		b.state.Logger.Info("飞书长连接已重连", "feishu")
 	})
 	ch.OnDisconnected(func() {
+		b.markDisconnected()
 		b.state.Logger.Warn("飞书长连接已断开", "feishu")
 	})
 	ch.OnError(func(err error) {
+		b.markError(err)
 		b.state.Logger.Warn(fmt.Sprintf("飞书长连接错误: %v", err), "feishu")
 	})
 
@@ -112,6 +121,7 @@ func (b *Bot) Start() {
 		if msg == nil {
 			return nil
 		}
+		b.markEvent()
 		reply := clampReply(dispatchMessage(ctx, msg))
 		if reply == "" {
 			return nil
@@ -122,6 +132,9 @@ func (b *Bot) Start() {
 		return nil
 	})
 	ch.OnCardAction(func(ctx context.Context, event *channeltypes.CardActionEvent) error {
+		if event != nil {
+			b.markEvent()
+		}
 		reply := clampReply(dispatchCardAction(ctx, event))
 		if reply == "" || event == nil {
 			return nil
@@ -146,6 +159,7 @@ func (b *Bot) Start() {
 		// 只有还是当前这条连接时才清状态:Reconfigure 可能已经换上新连接了。
 		if b.done == done {
 			b.started = false
+			b.connected = false
 			b.cancel = nil
 			b.ch = nil
 		}
@@ -168,6 +182,7 @@ func (b *Bot) Stop() {
 	}
 	cancel, done := b.cancel, b.done
 	b.started = false
+	b.connected = false
 	b.cancel = nil
 	b.ch = nil
 	b.mu.Unlock()
@@ -187,4 +202,93 @@ func (b *Bot) Stop() {
 func (b *Bot) Reconfigure() {
 	b.Stop()
 	b.Start()
+}
+
+// BotStatus 是设置页「连接状态」卡片读的快照。
+//
+// 和 Telegram 那边不同:飞书走长连接,没有 offset / 最后轮询这种概念,
+// 能说明"它到底在不在收消息"的只有连接状态、最后连接时间和最后事件时间。
+type BotStatus struct {
+	Enabled     bool   `json:"enabled"`
+	Configured  bool   `json:"configured"`
+	Bound       bool   `json:"bound"`
+	Started     bool   `json:"started"`
+	Connected   bool   `json:"connected"`
+	ConnectedAt string `json:"connectedAt,omitempty"`
+	LastEventAt string `json:"lastEventAt,omitempty"`
+	LastError   string `json:"lastError,omitempty"`
+	AppID       string `json:"appId,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+}
+
+// CurrentStatus 返回包级 bot 的状态快照。bot 还没初始化(或未配置)时返回空快照。
+func CurrentStatus() BotStatus {
+	botMu.Lock()
+	b := bot
+	botMu.Unlock()
+	if b == nil {
+		return BotStatus{}
+	}
+	return b.status()
+}
+
+func (b *Bot) status() BotStatus {
+	if b == nil || b.state == nil {
+		return BotStatus{}
+	}
+	b.mu.Lock()
+	started, connected := b.started, b.connected
+	connectedAt, lastEventAt, lastError := b.connectedAt, b.lastEventAt, b.lastError
+	b.mu.Unlock()
+
+	cfg := b.state.Config.Get()
+	return BotStatus{
+		Enabled:     cfg.FeishuEnabled,
+		Configured:  cfg.FeishuConfigured(),
+		Bound:       strings.TrimSpace(cfg.FeishuBoundOpenID) != "",
+		Started:     started,
+		Connected:   connected,
+		ConnectedAt: formatStatusTime(connectedAt),
+		LastEventAt: formatStatusTime(lastEventAt),
+		LastError:   lastError,
+		AppID:       cfg.FeishuAppID,
+		Domain:      cfg.FeishuDomain,
+	}
+}
+
+func (b *Bot) markConnected() {
+	b.mu.Lock()
+	b.connected = true
+	b.connectedAt = time.Now()
+	// 连上就把上一次的错误清掉,否则界面会一直显示一个早就过去的故障。
+	b.lastError = ""
+	b.mu.Unlock()
+}
+
+func (b *Bot) markDisconnected() {
+	b.mu.Lock()
+	b.connected = false
+	b.mu.Unlock()
+}
+
+func (b *Bot) markError(err error) {
+	if err == nil {
+		return
+	}
+	b.mu.Lock()
+	b.lastError = err.Error()
+	b.mu.Unlock()
+}
+
+func (b *Bot) markEvent() {
+	b.mu.Lock()
+	b.lastEventAt = time.Now()
+	b.mu.Unlock()
+}
+
+func formatStatusTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }

@@ -28,7 +28,7 @@ type Config struct {
 	// 所以默认比普通任务激进得多;但太密会吃 OVH 的 429,这里交给用户自己权衡。
 	QuickOrderRetryInterval int `json:"quickOrderRetryInterval,omitempty"`
 
-	// DisplayMode 是否显示人民币参考价:"both"(原币 + ≈¥) / "off"(只看原币)。
+	// DisplayMode 是否显示人民币参考价:"both"(原币 + ≈ ¥) / "off"(只看原币)。
 	//
 	// 存进 Config 而不是前端 localStorage,是因为同一份判据还要被后端通知
 	// (TG / 飞书 / webhook)使用 —— 界面上关了人民币、通知里却还带着,用户
