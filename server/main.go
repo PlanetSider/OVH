@@ -266,6 +266,11 @@ func main() {
 		api.GET("/feishu/status", handlers.GetFeishuStatus(state))
 		api.POST("/feishu/test-send", handlers.SendFeishuTestMessage(state))
 
+		// 定时播报：preview 只看文案，run 真发一次。每日循环在后台，
+		// 这两个入口是给"配完不想等到明天"用的（也方便核对价格）。
+		api.POST("/broadcast/preview", handlers.PreviewTaskBroadcast(state, mon))
+		api.POST("/broadcast/run", handlers.RunTaskBroadcast(state, mon))
+
 		// Logs / stats
 		api.GET("/logs", handlers.GetLogs(state))
 		api.POST("/logs/flush", handlers.FlushLogs(state))
@@ -624,6 +629,11 @@ func main() {
 	// 预热各账户子公司的区域配置:region 的合法取值要从 10MB 的公开目录里解析,
 	// 首次解析放在抢购链路上会白白慢 2-7 秒
 	go catalog.WarmRegionCache(state)
+	// 每日定时播报：每分钟醒一次比对设置里的 HH:MM（固定北京时间），到点发一次；
+	// 停机期间错过的不补发——早上九点的任务清单，下午补发只会误导。
+	go mon.RunTaskBroadcastLoop(context.Background())
+	// 启动播报是独立开关（默认关）：几秒内重启几次就会连发几条，必须让用户自己决定。
+	go mon.SendStartupTaskBroadcast(context.Background())
 	// 按账户的出站代理看门狗:代理连续挂掉就暂停那个账户的任务并通知用户。
 	//
 	// 必须在任何 OVH 调用之前接好 —— SetProxyErrorHook 会清掉已缓存的 client

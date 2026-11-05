@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw, Radio, Network, Fingerprint, ShieldAlert, Radar, Ban, Activity, Timer, Palette, Eye, Sun, Moon, Monitor, MessageSquare } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw, Radio, Network, Fingerprint, ShieldAlert, Radar, Ban, Activity, Timer, Palette, Eye, Sun, Moon, Monitor, MessageSquare, CalendarClock } from "lucide-react";
 import { useTheme } from "@/hooks/use-theme";
 import { Section } from "@/routes/settings-sections";
 import { AppPairingSection } from "@/components/settings/AppPairingSection";
 import { FeishuSection } from "@/components/settings/FeishuSection";
+import { BroadcastSection } from "@/components/settings/BroadcastSection";
 import { Smartphone } from "lucide-react";
 import type { ThemeMode } from "@/lib/theme";
 import { useEffect, useState } from "react";
@@ -80,6 +81,7 @@ const SECTIONS = [
   { id: "purchase", icon: Timer, label: "settings.sections.purchase" },
   { id: "telegram", icon: Send, label: "settings.sections.telegram" },
   { id: "notify", icon: BellRing, label: "settings.sections.notify" },
+  { id: "broadcast", icon: CalendarClock, label: "settings.sections.broadcast" },
   { id: "app", icon: Smartphone, label: "settings.sections.app" },
   { id: "cache", icon: Database, label: "settings.sections.cache" },
 ] as const;
@@ -219,6 +221,8 @@ function SettingsPage() {
               <AccountsSection />
             ) : active === "telegram" ? (
               <TelegramSection form={form} set={set} />
+            ) : active === "broadcast" ? (
+              <BroadcastSection form={form} set={set} />
             ) : active === "notify" ? (
               <NotifySection form={form} set={set} />
             ) : active === "purchase" ? (

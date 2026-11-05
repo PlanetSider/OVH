@@ -45,6 +45,20 @@ export interface SettingsConfig {
   serverChanUrl?: string;
   /** MeoW 推送昵称，消息发到 https://api.chuckfang.com/<昵称> */
   meowNickname?: string;
+
+  /**
+   * 每日定时播报。分类开关用 *bool 语义：后端缺省时按「开」处理，
+   * 这里用 undefined 表示用户没动过，保存时原样传回。
+   */
+  taskBroadcastEnabled?: boolean;
+  /** 本地时间 HH:MM（固定按北京时间解释），默认 09:00 */
+  taskBroadcastTime?: string;
+  taskBroadcastQueueEnabled?: boolean;
+  taskBroadcastMonitorEnabled?: boolean;
+  taskBroadcastVpsEnabled?: boolean;
+  taskBroadcastReportEnabled?: boolean;
+  /** 启动时播报一次；独立开关，默认关（频繁重启会刷屏） */
+  taskBroadcastOnStartup?: boolean;
 }
 
 /** 重试间隔的合法区间与默认值，与后端 types.ClampRetryInterval 一致 */

@@ -82,6 +82,13 @@ func New(database *db.DB) *Store {
 	s.cfg.DisplayMode = types.NormalizeDisplayMode(s.cfg.DisplayMode)
 	// 飞书域名只认 lark,其余(含老配置的空串)按 feishu。
 	s.cfg.FeishuDomain = types.NormalizeFeishuDomain(s.cfg.FeishuDomain)
+	// 定时播报时间：老配置没有这个键，空串给默认 09:00；存坏了也回退，
+	// 不能让一个手改的 "9:5" 把整条每日循环卡死。
+	if t, err := types.NormalizeTaskBroadcastTime(s.cfg.TaskBroadcastTime); err == nil {
+		s.cfg.TaskBroadcastTime = t
+	} else {
+		s.cfg.TaskBroadcastTime = types.DefaultTaskBroadcastTime
+	}
 	return s
 }
 

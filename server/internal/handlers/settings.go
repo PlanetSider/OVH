@@ -67,6 +67,15 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 				"message": "MeoW 昵称不能包含 / \\ ? #", "code": "E3CAC8033"})
 			return
 		}
+		// 定时播报时间在保存这一刻校验：存进一个非法值的话，每日循环会一直
+		// 回退到默认时间，但设置页显示的却是用户填的字符串，两边对不上。
+		normalizedTime, timeErr := types.NormalizeTaskBroadcastTime(newCfg.TaskBroadcastTime)
+		if timeErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error",
+				"message": "定时播报时间不合法：" + timeErr.Error(), "code": "E3CAC8034"})
+			return
+		}
+		newCfg.TaskBroadcastTime = normalizedTime
 		// 默认值兜底
 		if newCfg.Endpoint == "" {
 			newCfg.Endpoint = "ovh-eu"

@@ -218,6 +218,23 @@ func (s *State) HasAnyAccount() bool {
 	return len(s.Accounts) > 0
 }
 
+// VPSSubscriptionsSnapshot VPS 订阅快照，供播报/统计这类后台读取使用。
+// 直接遍历 state.VPSSubscriptions 会和保存、编辑、监控更新竞争；这里统一
+// 走 VPSSubsMu，并把 LastStatus/History 置空——调用方只需要静态配置，
+// 不读这两个字段就没有并发读 map 的风险。
+func (s *State) VPSSubscriptionsSnapshot() []types.VPSSubscription {
+	s.VPSSubsMu.Lock()
+	defer s.VPSSubsMu.Unlock()
+	out := make([]types.VPSSubscription, len(s.VPSSubscriptions))
+	copy(out, s.VPSSubscriptions)
+	for i := range out {
+		out[i].Datacenters = append([]string(nil), out[i].Datacenters...)
+		out[i].LastStatus = nil
+		out[i].History = nil
+	}
+	return out
+}
+
 // FindAccount 多账户查找。id="" 返回默认账户(没默认 → 第一个);否则按 ID 精确匹配。
 // OVH Factory 的 lookup 走这个,所有 ClientFor(accountID) 都会绕一圈到这里。
 func (s *State) FindAccount(id string) (types.OVHAccount, bool) {

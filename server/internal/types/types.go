@@ -1,6 +1,8 @@
 package types
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,6 +57,22 @@ type Config struct {
 	ServerChanURL string `json:"serverChanUrl,omitempty"`
 	// MeowNickname MeoW 推送昵称,消息发到 https://api.chuckfang.com/<昵称>。
 	MeowNickname string `json:"meowNickname,omitempty"`
+
+	// —— 定时播报（每日一次，把当前任务/订阅/战报发到所有已配置的通知通道） ——
+	//
+	// 为什么用 *bool 而不是 bool：旧配置里根本没有这些键，读出来是零值 false。
+	// 用 bool 就分不清"升级后还没配"和"用户主动关掉了"。
+	// 默认姿态：分类开关 nil = 开（打开总开关就该收到完整清单），
+	// 总开关 / 启动播报 nil = 关（升级不能突然开始发消息）。
+	TaskBroadcastEnabled        *bool  `json:"taskBroadcastEnabled,omitempty"`
+	TaskBroadcastTime           string `json:"taskBroadcastTime,omitempty"` // HH:MM，按 Asia/Shanghai
+	TaskBroadcastQueueEnabled   *bool  `json:"taskBroadcastQueueEnabled,omitempty"`
+	TaskBroadcastMonitorEnabled *bool  `json:"taskBroadcastMonitorEnabled,omitempty"`
+	TaskBroadcastVPSEnabled     *bool  `json:"taskBroadcastVpsEnabled,omitempty"`
+	TaskBroadcastReportEnabled  *bool  `json:"taskBroadcastReportEnabled,omitempty"`
+	// TaskBroadcastOnStartup 服务启动时补发一次队列/监控/VPS 清单。
+	// 独立于每日开关：容器和自更新会频繁重启，默认关，需要的人自己打开。
+	TaskBroadcastOnStartup *bool `json:"taskBroadcastOnStartup,omitempty"`
 }
 
 // DisplayMode 的合法取值。
@@ -123,6 +141,66 @@ func NormalizeDisplayMode(s string) string {
 	}
 }
 
+// DefaultTaskBroadcastTime 每日播报的默认时间（北京时间 09:00）。
+const DefaultTaskBroadcastTime = "09:00"
+
+// flagDefault 把"没配过"归到调用方指定的默认值。
+// nil 一律视为未配置——旧配置里没有这些键，反序列化后就是 nil。
+func flagDefault(v *bool, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+
+// IsTaskBroadcastEnabled 每日定时播报总开关（默认关）。
+func (c Config) IsTaskBroadcastEnabled() bool {
+	return flagDefault(c.TaskBroadcastEnabled, false)
+}
+
+// IsTaskBroadcastOnStartup 启动补发开关（默认关）。
+// 与每日开关解耦：想每次重启确认"在盯什么"的人可以只开这个。
+func (c Config) IsTaskBroadcastOnStartup() bool {
+	return flagDefault(c.TaskBroadcastOnStartup, false)
+}
+
+// 分类开关默认开：总开关是用户唯一需要理解的门，打开后不应再怀疑
+// "为什么只发了队列、没发监控"。
+func (c Config) IsTaskBroadcastQueueEnabled() bool {
+	return flagDefault(c.TaskBroadcastQueueEnabled, true)
+}
+
+func (c Config) IsTaskBroadcastMonitorEnabled() bool {
+	return flagDefault(c.TaskBroadcastMonitorEnabled, true)
+}
+
+func (c Config) IsTaskBroadcastVPSEnabled() bool {
+	return flagDefault(c.TaskBroadcastVPSEnabled, true)
+}
+
+func (c Config) IsTaskBroadcastReportEnabled() bool {
+	return flagDefault(c.TaskBroadcastReportEnabled, true)
+}
+
+// NormalizeTaskBroadcastTime 校验并规范化 "HH:MM"。
+// 空值给默认时间；非法值返回错误，由调用方决定是拒绝保存还是回退默认。
+func NormalizeTaskBroadcastTime(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return DefaultTaskBroadcastTime, nil
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("时间格式必须是 HH:MM")
+	}
+	hour, hourErr := strconv.Atoi(parts[0])
+	minute, minuteErr := strconv.Atoi(parts[1])
+	if hourErr != nil || minuteErr != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return "", fmt.Errorf("时间必须在 00:00 到 23:59 之间")
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute), nil
+}
+
 // 飞书域名。海外租户(tenant_brand=lark)要用 larksuite.com 的接口,
 // 但连接层和扫码注册都不看这个值决定"用哪个端点"——它只决定消息 API 的 host。
 const (
@@ -155,6 +233,7 @@ func DefaultConfig() Config {
 		QuickOrderRetryInterval: DefaultQuickRetryInterval,
 		DisplayMode:             DisplayModeBoth,
 		FeishuDomain:            FeishuDomainFeishu,
+		TaskBroadcastTime:       DefaultTaskBroadcastTime,
 	}
 }
 
