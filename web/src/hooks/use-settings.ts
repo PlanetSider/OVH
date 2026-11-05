@@ -38,6 +38,13 @@ export interface SettingsConfig {
   /** 扫码者/绑定者的 open_id，只允许这个人私聊命令机器人 */
   feishuBoundOpenId?: string;
   feishuEnabled?: boolean;
+  /**
+   * Server酱³ 的完整推送地址（https://<uid>.push.ft07.com/send/<sendkey>.send）。
+   * 协议是 title/desp 表单，和 notifyWebhookUrl 的通用 JSON 不是一回事。
+   */
+  serverChanUrl?: string;
+  /** MeoW 推送昵称，消息发到 https://api.chuckfang.com/<昵称> */
+  meowNickname?: string;
 }
 
 /** 重试间隔的合法区间与默认值，与后端 types.ClampRetryInterval 一致 */

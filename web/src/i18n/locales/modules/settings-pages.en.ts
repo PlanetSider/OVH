@@ -92,6 +92,14 @@ const pack: SettingsPagesPack = {
       webhookHintMid: ". It sends a JSON POST, putting the same text into ",
       webhookHintPost:
         " fields at once — it doesn't guess which protocol your receiver speaks; DingTalk, Feishu, Bark and self-built endpoints can all read one of them. Note the “one-click order” button is Telegram-only; webhooks receive plain text.",
+      serverChanLabel: "Server酱³ URL (optional)",
+      serverChanPlaceholder: "https://<uid>.push.ft07.com/send/<sendkey>.send",
+      serverChanHint:
+        "Copy the full API URL from the Server酱³ SendKey page. It receives title / desp form fields (desp supports markdown). This is a separate channel from the generic webhook above; both can be filled.",
+      meowLabel: "MeoW nickname (optional)",
+      meowPlaceholder: "Your MeoW nickname",
+      meowHint:
+        "Only the nickname is needed; the app POSTs to https://api.chuckfang.com/<nickname>. The nickname cannot contain / \\ ? # or it would address a different path.",
       sending: "Sending…",
       sendTest: "Send a test notification",
       testHint:

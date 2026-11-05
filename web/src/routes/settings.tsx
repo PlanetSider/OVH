@@ -514,6 +514,28 @@ function NotifySection({
         </p>
       </Field>
 
+      <Field label={t("settings.notify.serverChanLabel")}>
+        <Input
+          value={form.serverChanUrl || ""}
+          onChange={(e) => set("serverChanUrl", e.target.value)}
+          placeholder={t("settings.notify.serverChanPlaceholder")}
+        />
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {t("settings.notify.serverChanHint")}
+        </p>
+      </Field>
+
+      <Field label={t("settings.notify.meowLabel")}>
+        <Input
+          value={form.meowNickname || ""}
+          onChange={(e) => set("meowNickname", e.target.value)}
+          placeholder={t("settings.notify.meowPlaceholder")}
+        />
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {t("settings.notify.meowHint")}
+        </p>
+      </Field>
+
       <div>
         <Button
           type="button"

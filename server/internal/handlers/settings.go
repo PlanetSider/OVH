@@ -50,7 +50,23 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 				return
 			}
 		}
-
+		// Server酱³ 是 title/desp 表单协议,和上面的通用 JSON webhook 不是一回事,
+		// 所以单独一个字段、单独验一遍:填错时同样要在这里挡下来。
+		newCfg.ServerChanURL = strings.TrimSpace(newCfg.ServerChanURL)
+		if newCfg.ServerChanURL != "" {
+			u, err := url.Parse(newCfg.ServerChanURL)
+			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error",
+					"message": "Server酱³ 地址不合法,必须是完整的 http:// 或 https:// 地址", "code": "E3CAC8032"})
+				return
+			}
+		}
+		newCfg.MeowNickname = strings.TrimSpace(newCfg.MeowNickname)
+		if strings.ContainsAny(newCfg.MeowNickname, "/\\?#") {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error",
+				"message": "MeoW 昵称不能包含 / \\ ? #", "code": "E3CAC8033"})
+			return
+		}
 		// 默认值兜底
 		if newCfg.Endpoint == "" {
 			newCfg.Endpoint = "ovh-eu"

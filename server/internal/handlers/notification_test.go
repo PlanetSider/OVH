@@ -40,11 +40,13 @@ func TestNotificationUsesActualDeliveryWithoutSecondWebhook(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
-			// 通道顺序固定为 Telegram / Webhook / 飞书；飞书没配时必须如实回报"未启用"，
-			// 不能因为它不参与本次投递就从列表里消失（那样前端会以为通道不存在）。
-			if response.Code != tc.status || result.Delivered != tc.delivered || len(result.Channels) != 3 ||
+			// 通道顺序固定为 Telegram / Webhook / 飞书 / Server酱³ / MeoW；没配的必须如实
+			// 回报"未配置"，不能因为它们不参与本次投递就从列表里消失（那样前端会以为通道不存在）。
+			if response.Code != tc.status || result.Delivered != tc.delivered || len(result.Channels) != 5 ||
 				result.Channels[1].OK != tc.ok || !result.Channels[1].Configured ||
-				result.Channels[2].Name != "飞书" || result.Channels[2].Configured {
+				result.Channels[2].Name != "飞书" || result.Channels[2].Configured ||
+				result.Channels[3].Name != "Server酱³" || result.Channels[3].Configured ||
+				result.Channels[4].Name != "MeoW" || result.Channels[4].Configured {
 				t.Fatalf("incorrect delivery result: %d %+v", response.Code, result)
 			}
 			if !tc.ok && !strings.Contains(result.Channels[1].Detail, "19002") {

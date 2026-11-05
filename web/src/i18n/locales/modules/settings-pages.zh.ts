@@ -83,6 +83,14 @@ export const settingsPagesZh = {
       webhookHintMid: "。发的是一个 JSON POST，同一条文本同时放进",
       webhookHintPost:
         "几个字段 —— 不猜你的接收端用哪个协议，钉钉/飞书/Bark/自建都能取到其中一个。注意「一键下单」按钮只有 Telegram 有，webhook 收到的是纯文本。",
+      serverChanLabel: "Server酱³ 地址（可选）",
+      serverChanPlaceholder: "https://<uid>.push.ft07.com/send/<sendkey>.send",
+      serverChanHint:
+        "从 Server酱³ 的 SendKey 页面直接复制完整 API 地址即可。它收的是 title / desp 表单字段（desp 支持 markdown），和上面的通用 Webhook 是两个独立通道，可以都填。",
+      meowLabel: "MeoW 昵称（可选）",
+      meowPlaceholder: "你的 MeoW 昵称",
+      meowHint:
+        "只填昵称，程序会 POST 到 https://api.chuckfang.com/<昵称>。昵称不能包含 / \\ ? #，否则会打到别的路径上。",
       sending: "发送中…",
       sendTest: "发一条测试通知",
       testHint: "会往所有已配置的通道各发一条。先保存设置再测 —— 测的是已保存的配置，不是输入框里的",

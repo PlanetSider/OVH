@@ -48,6 +48,13 @@ type Config struct {
 	FeishuBoundOpenID string `json:"feishuBoundOpenId,omitempty"` // 唯一被授权的私聊接收人
 	// FeishuEnabled 临时停用开关。凭据还在、连接不建,用于排查问题时不丢配置。
 	FeishuEnabled bool `json:"feishuEnabled,omitempty"`
+
+	// ServerChanURL Server酱³ 的完整推送地址,形如
+	// https://<uid>.push.ft07.com/send/<sendkey>.send
+	// 参数是 title/desp,不是通用 JSON,所以不能塞进 NotifyWebhookURL。
+	ServerChanURL string `json:"serverChanUrl,omitempty"`
+	// MeowNickname MeoW 推送昵称,消息发到 https://api.chuckfang.com/<昵称>。
+	MeowNickname string `json:"meowNickname,omitempty"`
 }
 
 // DisplayMode 的合法取值。

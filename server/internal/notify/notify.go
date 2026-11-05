@@ -90,10 +90,30 @@ func BroadcastWithStatus(state *app.State, message string, replyMarkup map[strin
 			fs.OK = true
 		}
 	}
-	if delivered == 0 {
-		state.Logger.Error("这条通知一个通道都没送达,请检查 Telegram / Webhook / 飞书配置", "notify")
+	sc := Channel{Name: "Server酱³", Configured: strings.TrimSpace(cfg.ServerChanURL) != ""}
+	if sc.Configured {
+		if err := sendServerChan(cfg.ServerChanURL, message); err != nil {
+			sc.Detail = err.Error()
+			state.Logger.Warn("Server酱³ 通知发送失败: "+err.Error(), "notify")
+		} else {
+			delivered++
+			sc.OK = true
+		}
 	}
-	return delivered, []Channel{tg, wh, fs}
+	meow := Channel{Name: "MeoW", Configured: strings.TrimSpace(cfg.MeowNickname) != ""}
+	if meow.Configured {
+		if err := sendMeow(cfg.MeowNickname, message); err != nil {
+			meow.Detail = err.Error()
+			state.Logger.Warn("MeoW 通知发送失败: "+err.Error(), "notify")
+		} else {
+			delivered++
+			meow.OK = true
+		}
+	}
+	if delivered == 0 {
+		state.Logger.Error("这条通知一个通道都没送达,请检查 Telegram / Webhook / 飞书 / Server酱 / MeoW 配置", "notify")
+	}
+	return delivered, []Channel{tg, wh, fs, sc, meow}
 }
 
 // feishuChannel 组装飞书(应用内私聊)通道的配置状态。
@@ -210,11 +230,109 @@ func sendWebhook(webhookURL, message string) error {
 	return nil
 }
 
+// sendServerChan 发到 Server酱³。
+//
+// 它的协议是 title/desp 两个表单字段(desp 支持 markdown),不是通用 JSON,
+// 所以不能复用 sendWebhook —— 硬塞进去只会发出一个对方不认识的 payload。
+func sendServerChan(apiURL, message string) error {
+	u, err := url.Parse(strings.TrimSpace(apiURL))
+	if err != nil {
+		return fmt.Errorf("Server酱³ 地址无效: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("Server酱³ 地址必须以 http(s) 开头")
+	}
+	form := url.Values{}
+	form.Set("title", "OVH 控制台")
+	form.Set("desp", message)
+	req, err := http.NewRequest(http.MethodPost, u.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	const maxResponse = 64 << 10
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	if err != nil {
+		return fmt.Errorf("读取 Server酱³ 响应失败: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet := body
+		if len(snippet) > 300 {
+			snippet = snippet[:300]
+		}
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	// 成功响应一般是空 body 或 {"code":0};只有明确给出非 0 code 才判失败,
+	// 免得将来对方换响应格式时把"其实发成功了"误报成失败。
+	var result struct {
+		Code    *json.Number `json:"code"`
+		Message string       `json:"message"`
+	}
+	if err := json.Unmarshal(body, &result); err == nil && result.Code != nil {
+		if code, convErr := result.Code.Int64(); convErr == nil && code != 0 {
+			return fmt.Errorf("Server酱³ 返回错误 (%d): %s", code, result.Message)
+		}
+	}
+	return nil
+}
+
+// meowBaseURL 单独拎出来是为了测试能指向 httptest;生产固定官方地址。
+var meowBaseURL = "https://api.chuckfang.com"
+
+// sendMeow 发到 MeoW。昵称在路径里,所以斜杠/问号这类字符直接拒绝,
+// 否则会把请求打到别的路径上。
+func sendMeow(nickname, message string) error {
+	nick := strings.TrimSpace(nickname)
+	if nick == "" {
+		return fmt.Errorf("MeoW 昵称未配置")
+	}
+	if strings.ContainsAny(nick, "/\\?#") {
+		return fmt.Errorf("MeoW 昵称不能包含 / \\ ? #")
+	}
+	endpoint := meowBaseURL + "/" + url.PathEscape(nick)
+	payload, err := json.Marshal(map[string]string{"title": "OVH 控制台", "msg": message})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	const maxResponse = 64 << 10
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	if err != nil {
+		return fmt.Errorf("读取 MeoW 响应失败: %w", err)
+	}
+	var result struct {
+		Status int    `json:"status"`
+		Data   bool   `json:"data"`
+		Msg    string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("MeoW 返回无效响应 (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if result.Status != 200 || !result.Data {
+		return fmt.Errorf("MeoW 返回错误 (%d): %s", result.Status, result.Msg)
+	}
+	return nil
+}
+
 // Status 逐个通道体检。verifyRemote=true 时会真的去调远端(Telegram getMe / getChat),
 // 只想知道"配没配"就传 false —— 监控循环里每轮都调远端会白白打 API。
 func Status(state *app.State, verifyRemote bool) []Channel {
 	cfg := state.Config.Get()
-	out := make([]Channel, 0, 3)
+	out := make([]Channel, 0, 5)
 
 	tg := Channel{Name: "Telegram"}
 	tg.Configured = strings.TrimSpace(cfg.TgToken) != "" && strings.TrimSpace(cfg.TgChatID) != ""
@@ -262,6 +380,42 @@ func Status(state *app.State, verifyRemote bool) []Channel {
 	}
 	out = append(out, fs)
 
+	sc := Channel{Name: "Server酱³"}
+	scURL := strings.TrimSpace(cfg.ServerChanURL)
+	sc.Configured = scURL != ""
+	if sc.Configured {
+		if verifyRemote {
+			if err := sendServerChan(scURL, "OVH 控制台:通知通道连通性测试"); err != nil {
+				sc.Detail = err.Error()
+			} else {
+				sc.OK = true
+			}
+		} else {
+			sc.OK = true
+		}
+	} else {
+		sc.Detail = "未配置"
+	}
+	out = append(out, sc)
+
+	meow := Channel{Name: "MeoW"}
+	meowNick := strings.TrimSpace(cfg.MeowNickname)
+	meow.Configured = meowNick != ""
+	if meow.Configured {
+		if verifyRemote {
+			if err := sendMeow(meowNick, "OVH 控制台:通知通道连通性测试"); err != nil {
+				meow.Detail = err.Error()
+			} else {
+				meow.OK = true
+			}
+		} else {
+			meow.OK = true
+		}
+	} else {
+		meow.Detail = "未配置"
+	}
+	out = append(out, meow)
+
 	return out
 }
 
@@ -279,7 +433,7 @@ func AnyAvailable(state *app.State, verifyRemote bool) (bool, string) {
 		}
 	}
 	if len(reasons) == 0 {
-		return false, "没有配置任何通知通道(Telegram / Webhook / 飞书)"
+		return false, "没有配置任何通知通道(Telegram / Webhook / 飞书 / Server酱 / MeoW)"
 	}
 	return false, strings.Join(reasons, "; ")
 }

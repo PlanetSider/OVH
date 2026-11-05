@@ -177,13 +177,13 @@ export function AppShell() {
               )}
               <span className="nav-label">{collapsed && !mobile ? "" : t("shell.collapseRail")}</span>
             </button>
-            {/* 冠名:GitHub 仓库 + 作者(可乐/cola)。收起态 GitHub 图标仍在,title 提示仓库地址 */}
+            {/* 冠名:GitHub 仓库 + 维护者(PlanetSider)。收起态 GitHub 图标仍在,title 提示仓库地址 */}
             <a
-              href="https://github.com/gokele/ovh"
+              href="https://github.com/PlanetSider/OVH"
               target="_blank"
               rel="noreferrer"
               className="nav-item"
-              title="github.com/gokele/ovh"
+              title="github.com/PlanetSider/OVH"
             >
               <Github className="nav-ico" size={16} strokeWidth={1.9} />
               <span className="nav-label">{t("shell.cola")}</span>

@@ -212,10 +212,85 @@ func TestWebhookBusinessErrorNotCountedAsDelivered(t *testing.T) {
 	state := testState(t)
 	state.Config.Set(types.Config{NotifyWebhookURL: srv.URL})
 	delivered, channels := BroadcastWithStatus(state, "测试", nil)
-	if delivered != 0 || len(channels) != 3 || channels[1].OK || !strings.Contains(channels[1].Detail, "19002") {
+	if delivered != 0 || len(channels) != 5 || channels[1].OK || !strings.Contains(channels[1].Detail, "19002") {
 		t.Fatalf("false success: %d %+v", delivered, channels)
 	}
 	if ok, reason := AnyAvailable(state, true); ok || !strings.Contains(reason, "19002") {
 		t.Fatalf("false healthy: %v %s", ok, reason)
+	}
+}
+
+func TestSendServerChanPostsTitleAndDesp(t *testing.T) {
+	var title, desp string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		title = r.PostForm.Get("title")
+		desp = r.PostForm.Get("desp")
+		io.WriteString(w, `{"code":0,"message":"ok"}`)
+	}))
+	defer srv.Close()
+	if err := sendServerChan(srv.URL, "24sk602 有货了"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if title == "" || desp != "24sk602 有货了" {
+		t.Fatalf("unexpected form: title=%q desp=%q", title, desp)
+	}
+}
+
+func TestSendServerChanBusinessError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"code":40001,"message":"bad sendkey"}`)
+	}))
+	defer srv.Close()
+	err := sendServerChan(srv.URL, "x")
+	if err == nil || !strings.Contains(err.Error(), "40001") {
+		t.Fatalf("expected business error, got %v", err)
+	}
+}
+
+func TestSendServerChanRejectsNonHTTP(t *testing.T) {
+	if err := sendServerChan("ftp://example.com/send/x.send", "x"); err == nil {
+		t.Fatal("expected scheme error")
+	}
+}
+
+func TestSendMeowPostsJSON(t *testing.T) {
+	var path string
+	var body map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"status":200,"data":true,"msg":"发送成功"}`)
+	}))
+	defer srv.Close()
+	old := meowBaseURL
+	meowBaseURL = srv.URL
+	defer func() { meowBaseURL = old }()
+	if err := sendMeow("JohnDoe", "有货了"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/JohnDoe" || body["msg"] != "有货了" || body["title"] == "" {
+		t.Fatalf("unexpected request: path=%q body=%v", path, body)
+	}
+}
+
+func TestSendMeowBusinessError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"status":404,"data":false,"msg":"昵称未注册"}`)
+	}))
+	defer srv.Close()
+	old := meowBaseURL
+	meowBaseURL = srv.URL
+	defer func() { meowBaseURL = old }()
+	err := sendMeow("Nobody", "x")
+	if err == nil || !strings.Contains(err.Error(), "昵称未注册") {
+		t.Fatalf("expected business error, got %v", err)
+	}
+}
+
+func TestSendMeowRejectsBadNickname(t *testing.T) {
+	if err := sendMeow("a/b", "x"); err == nil {
+		t.Fatal("expected nickname error")
 	}
 }

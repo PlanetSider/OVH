@@ -418,7 +418,7 @@ const pack: CommonLayerPack = {
     openMenu: "Open menu",
     expandRail: "Expand navigation",
     collapseRail: "Collapse navigation",
-    cola: "cola",
+    cola: "PlanetSider",
     account: {
       loadFailed: "Failed to load the account list",
       add: "Add an OVH account",
