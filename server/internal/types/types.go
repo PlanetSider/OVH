@@ -34,6 +34,20 @@ type Config struct {
 	// (TG / 飞书 / webhook)使用 —— 界面上关了人民币、通知里却还带着,用户
 	// 无法解释这种不一致。空值/未知值一律按 "both" 处理,兼容旧配置。
 	DisplayMode string `json:"displayMode,omitempty"`
+
+	// —— 飞书机器人(长连接,双向) ——
+	//
+	// 和 NotifyWebhookURL 的飞书群机器人是两条完全不同的通道:
+	//   - Webhook:只出,往群里发文本,零配置;
+	//   - 应用:能进能出,私聊收命令、卡片带按钮、回调触发下单。
+	// 所以凭据单独存:App Secret 是能冒充机器人发消息、甚至触发下单的密钥,
+	// 和 OVH 凭据同级,必须走 secret.Encrypt。
+	FeishuAppID       string `json:"feishuAppId,omitempty"`
+	FeishuAppSecret   string `json:"feishuAppSecret,omitempty"`
+	FeishuDomain      string `json:"feishuDomain,omitempty"`      // feishu | lark
+	FeishuBoundOpenID string `json:"feishuBoundOpenId,omitempty"` // 唯一被授权的私聊接收人
+	// FeishuEnabled 临时停用开关。凭据还在、连接不建,用于排查问题时不丢配置。
+	FeishuEnabled bool `json:"feishuEnabled,omitempty"`
 }
 
 // DisplayMode 的合法取值。
@@ -102,6 +116,28 @@ func NormalizeDisplayMode(s string) string {
 	}
 }
 
+// 飞书域名。海外租户(tenant_brand=lark)要用 larksuite.com 的接口,
+// 但连接层和扫码注册都不看这个值决定"用哪个端点"——它只决定消息 API 的 host。
+const (
+	FeishuDomainFeishu = "feishu"
+	FeishuDomainLark   = "lark"
+)
+
+// NormalizeFeishuDomain 只认 lark,其余(含空)一律 feishu。
+func NormalizeFeishuDomain(s string) string {
+	if strings.EqualFold(strings.TrimSpace(s), FeishuDomainLark) {
+		return FeishuDomainLark
+	}
+	return FeishuDomainFeishu
+}
+
+// FeishuConfigured 凭据是否齐全。连接层、设置页、扫码结果页共用这一份判据。
+// 注意:已绑定接收人(FeishuBoundOpenID)不在这里判断——没绑定也能连上,
+// 只是收不到授权命令。
+func (c Config) FeishuConfigured() bool {
+	return strings.TrimSpace(c.FeishuAppID) != "" && strings.TrimSpace(c.FeishuAppSecret) != ""
+}
+
 // DefaultConfig 默认配置
 func DefaultConfig() Config {
 	return Config{
@@ -111,6 +147,7 @@ func DefaultConfig() Config {
 		DefaultRetryInterval:    DefaultTaskRetryInterval,
 		QuickOrderRetryInterval: DefaultQuickRetryInterval,
 		DisplayMode:             DisplayModeBoth,
+		FeishuDomain:            FeishuDomainFeishu,
 	}
 }
 

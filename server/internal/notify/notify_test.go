@@ -212,7 +212,7 @@ func TestWebhookBusinessErrorNotCountedAsDelivered(t *testing.T) {
 	state := testState(t)
 	state.Config.Set(types.Config{NotifyWebhookURL: srv.URL})
 	delivered, channels := BroadcastWithStatus(state, "测试", nil)
-	if delivered != 0 || len(channels) != 2 || channels[1].OK || !strings.Contains(channels[1].Detail, "19002") {
+	if delivered != 0 || len(channels) != 3 || channels[1].OK || !strings.Contains(channels[1].Detail, "19002") {
 		t.Fatalf("false success: %d %+v", delivered, channels)
 	}
 	if ok, reason := AnyAvailable(state, true); ok || !strings.Contains(reason, "19002") {

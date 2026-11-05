@@ -25,6 +25,7 @@ import (
 	"github.com/ovh-buy/server/internal/config"
 	"github.com/ovh-buy/server/internal/db"
 	"github.com/ovh-buy/server/internal/exchange"
+	"github.com/ovh-buy/server/internal/feishu"
 	"github.com/ovh-buy/server/internal/handlers"
 	"github.com/ovh-buy/server/internal/logger"
 	"github.com/ovh-buy/server/internal/monitor"
@@ -252,6 +253,14 @@ func main() {
 
 		// 汇率参考价：只读后台快照，不在这里抓取
 		api.GET("/exchange/rates", handlers.GetExchangeRates())
+
+		// 飞书机器人扫码注册。这两个接口能拿到应用凭据，必须留在鉴权组里，
+		// 不能进 auth 的白名单（白名单是精确匹配且在限流之前放行）。
+		api.POST("/feishu/registration/start", handlers.StartFeishuRegistration(state))
+		api.GET("/feishu/registration/:id", handlers.PollFeishuRegistration(state))
+		// 手动填写的应用靠这个 6 位码绑定接收人（扫码路径会自动绑定）。
+		api.POST("/feishu/binding-code", handlers.CreateFeishuBindingCode(state))
+		api.POST("/feishu/unbind", handlers.UnbindFeishu(state))
 
 		// Logs / stats
 		api.GET("/logs", handlers.GetLogs(state))
@@ -595,6 +604,16 @@ func main() {
 	// 放在后台线程区而不是路由注册前，是因为它要访问 OVH 之外的公网，
 	// 失败只影响"人民币参考价"这一装饰层，绝不能让启动流程失败。
 	exchange.Init(state)
+	// 飞书机器人：有配置就建长连接；配置变更由 settings 保存路径触发 Reconfigure。
+	// 连接失败只记日志，不影响服务启动（没有公网/凭据错都不该让控制台起不来）。
+	// 命令解析交给 handlers：与 Telegram 共用同一批 *Text 实现，语义不会漂移。
+	feishu.SetMessageHandler(func(ctx context.Context, m feishu.Message) string {
+		return handlers.HandleFeishuMessage(state, mon, m)
+	})
+	feishu.SetCardActionHandler(func(ctx context.Context, act feishu.CardAction) string {
+		return handlers.HandleFeishuCardAction(state, mon, act)
+	})
+	feishu.Init(state)
 	go purchase.ProcessQueueLoop(state)
 	// 定时刷新历史里未到终态订单的支付状态(付款发生在下单之后的任意时刻)
 	go purchase.OrderStatusLoop(state)

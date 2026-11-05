@@ -16,6 +16,11 @@ const pack: CommonLayerPack = {
     logs: {
       cleared: "Logs cleared",
     },
+    feishu: {
+      startFailed: "Failed to generate the Feishu QR code",
+      bindCodeFailed: "Failed to generate the binding code",
+      unbindFailed: "Failed to unbind",
+    },
     aliases: {
       saved: "Alias saved",
       cleared: "Alias cleared",

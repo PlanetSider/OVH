@@ -13,7 +13,13 @@
 
 services:
   ovh-console:
-    image: ghcr.io/gokele/ovh:latest
+    # 本 fork 的镜像由 GitHub Actions（.github/workflows/docker.yml）自动构建：
+    #   push 到 main → latest / main / sha-<短SHA>
+    #   push v* tag → 语义版本号
+    #
+    # ⚠️ 首次推送后，需要到 GitHub → Packages 里把这个包设为 Public，
+    #    否则 docker compose pull 会因为未登录而失败（或者先 docker login ghcr.io）。
+    image: ghcr.io/planetsider/ovh:latest
     container_name: ovh-console
     restart: unless-stopped
 

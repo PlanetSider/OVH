@@ -209,3 +209,15 @@ CREATE TABLE IF NOT EXISTS app_pairing_codes (
   expires_at TEXT NOT NULL,
   used_at    TEXT
 );
+
+-- ===========================================
+-- feishu_events: 飞书事件幂等表(同一事件只处理一次)
+-- 长连接断线重连或平台重推时同一条消息可能被投递多次;
+-- 命令里有 /cancel 这类会改队列的操作,重复执行必须挡住。
+-- INSERT OR IGNORE + 主键冲突判定,与 telegram_updates 同一模式。
+-- ===========================================
+CREATE TABLE IF NOT EXISTS feishu_events (
+  event_id   TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feishu_events_created ON feishu_events(created_at);

@@ -35,12 +35,12 @@ func TestCnyPerUnitRejectsInvalidInput(t *testing.T) {
 		rates    map[string]float64
 		currency string
 	}{
-		"缺 CNY":       {map[string]float64{"EUR": 0.9}, "EUR"},
-		"币种汇率为零":      {map[string]float64{"CNY": 6.6, "EUR": 0}, "EUR"},
-		"币种汇率缺失":      {map[string]float64{"CNY": 6.6}, "EUR"},
-		"空币种":         {map[string]float64{"CNY": 6.6}, ""},
-		"CNY 自身为零":    {map[string]float64{"CNY": 0, "EUR": 0.9}, "EUR"},
-		"负数汇率":        {map[string]float64{"CNY": 6.6, "EUR": -1}, "EUR"},
+		"缺 CNY":    {map[string]float64{"EUR": 0.9}, "EUR"},
+		"币种汇率为零":   {map[string]float64{"CNY": 6.6, "EUR": 0}, "EUR"},
+		"币种汇率缺失":   {map[string]float64{"CNY": 6.6}, "EUR"},
+		"空币种":      {map[string]float64{"CNY": 6.6}, ""},
+		"CNY 自身为零": {map[string]float64{"CNY": 0, "EUR": 0.9}, "EUR"},
+		"负数汇率":     {map[string]float64{"CNY": 6.6, "EUR": -1}, "EUR"},
 	}
 	for name, c := range cases {
 		if v, ok := cnyPerUnit(c.rates, c.currency); ok {

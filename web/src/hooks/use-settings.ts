@@ -27,6 +27,17 @@ export interface SettingsConfig {
    * 存在后端而不是 localStorage —— 同一份判据还要给通知（TG/飞书/webhook）用。
    */
   displayMode?: string;
+  /**
+   * 飞书自建应用凭据。和 notifyWebhookUrl 里的群机器人是两条完全不同的通道：
+   * 群机器人只能单向发文本；自建应用能收私聊命令、发交互卡片、下单。
+   */
+  feishuAppId?: string;
+  feishuAppSecret?: string;
+  /** feishu | lark（海外租户） */
+  feishuDomain?: string;
+  /** 扫码者/绑定者的 open_id，只允许这个人私聊命令机器人 */
+  feishuBoundOpenId?: string;
+  feishuEnabled?: boolean;
 }
 
 /** 重试间隔的合法区间与默认值，与后端 types.ClampRetryInterval 一致 */

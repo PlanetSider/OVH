@@ -29,6 +29,8 @@ func encryptConfig(c types.Config) types.Config {
 	c.ConsumerKey = secret.Encrypt(c.ConsumerKey)
 	c.AppKey = secret.Encrypt(c.AppKey)
 	c.TgToken = secret.Encrypt(c.TgToken)
+	// 飞书 App Secret 能冒充机器人发消息、点卡片按钮,和上面几个同级。
+	c.FeishuAppSecret = secret.Encrypt(c.FeishuAppSecret)
 	return c
 }
 
@@ -46,6 +48,7 @@ func decryptConfig(c types.Config) types.Config {
 	c.AppSecret = dec(c.AppSecret)
 	c.ConsumerKey = dec(c.ConsumerKey)
 	c.TgToken = dec(c.TgToken)
+	c.FeishuAppSecret = dec(c.FeishuAppSecret)
 	return c
 }
 
@@ -77,6 +80,8 @@ func New(database *db.DB) *Store {
 	s.cfg.QuickOrderRetryInterval = types.ClampRetryInterval(s.cfg.QuickOrderRetryInterval, types.DefaultQuickRetryInterval)
 	// 汇率展示开关同样有"老配置里没有"的问题:空串按 both(保持升级前行为)。
 	s.cfg.DisplayMode = types.NormalizeDisplayMode(s.cfg.DisplayMode)
+	// 飞书域名只认 lark,其余(含老配置的空串)按 feishu。
+	s.cfg.FeishuDomain = types.NormalizeFeishuDomain(s.cfg.FeishuDomain)
 	return s
 }
 
@@ -115,6 +120,7 @@ func (s *Store) Set(c types.Config) error {
 	}
 	// 只认 off / both:前端传了没见过的值就按 both 存,避免"开关显示开着但实际被忽略"。
 	c.DisplayMode = types.NormalizeDisplayMode(c.DisplayMode)
+	c.FeishuDomain = types.NormalizeFeishuDomain(c.FeishuDomain)
 	if err := s.db.SetKV(kvConfigKey, encryptConfig(c)); err != nil {
 		return err
 	}

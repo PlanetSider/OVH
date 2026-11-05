@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/feishu"
 	"github.com/ovh-buy/server/internal/ovh"
 	"github.com/ovh-buy/server/internal/telegram"
 	"github.com/ovh-buy/server/internal/types"
@@ -60,8 +61,31 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		// 前端留空 / 传 0 = 用默认;超出区间夹回来。存进去的永远是明确的数
 		newCfg.DefaultRetryInterval = types.ClampRetryInterval(newCfg.DefaultRetryInterval, types.DefaultTaskRetryInterval)
 		newCfg.QuickOrderRetryInterval = types.ClampRetryInterval(newCfg.QuickOrderRetryInterval, types.DefaultQuickRetryInterval)
-	// 汇率展示开关只认 off / both;前端没传(旧版前端)时按 both,保持升级前行为。
-	newCfg.DisplayMode = types.NormalizeDisplayMode(newCfg.DisplayMode)
+		// 汇率展示开关只认 off / both;前端没传(旧版前端)时按 both,保持升级前行为。
+		newCfg.DisplayMode = types.NormalizeDisplayMode(newCfg.DisplayMode)
+
+		// 飞书凭据同样去空白:App ID/Secret 复制时常带首尾空格,
+		// 放过去会变成连接层的 "permission denied",日志里却像权限问题。
+		newCfg.FeishuAppID = strings.TrimSpace(newCfg.FeishuAppID)
+		newCfg.FeishuAppSecret = strings.TrimSpace(newCfg.FeishuAppSecret)
+		newCfg.FeishuBoundOpenID = strings.TrimSpace(newCfg.FeishuBoundOpenID)
+		newCfg.FeishuDomain = types.NormalizeFeishuDomain(newCfg.FeishuDomain)
+
+		// 扫码注册成功后凭据已经写进库了,而扫码流程按设计不回传 App Secret,
+		// 所以表单里这一格是空的。用户接着点「保存设置」时不能让空串把刚拿到的
+		// 凭据抹掉 —— 那会表现为"扫码成功,保存后机器人又不工作了"。
+		// 想禁用机器人请用 feishuEnabled=false(或未来单独的移除接口)。
+		if newCfg.FeishuAppID == "" {
+			newCfg.FeishuAppID = prev.FeishuAppID
+		}
+		if newCfg.FeishuAppSecret == "" {
+			newCfg.FeishuAppSecret = prev.FeishuAppSecret
+		}
+		// 绑定同理：解绑走独立的 /api/feishu/unbind，不能让"保存设置"顺手清掉
+		// 扫码或 /bind 刚写进去的 open_id。
+		if newCfg.FeishuBoundOpenID == "" {
+			newCfg.FeishuBoundOpenID = prev.FeishuBoundOpenID
+		}
 
 		if err := state.Config.Set(newCfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": ovh.Explain(err)})
@@ -78,6 +102,17 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if newCfg.TgToken != prev.TgToken {
 			state.Logger.Info("Telegram Token 已变更,重启长轮询", "telegram")
 			go RestartPoller(state)
+		}
+
+		// 飞书凭据/域名/开关变了 → 让连接层按新配置重建。
+		// 不重连的话用户换完 App Secret 保存,界面显示成功,实际还拿着旧凭据,
+		// 而且不会有任何报错(旧长连接可能仍然活着)。
+		if newCfg.FeishuAppID != prev.FeishuAppID ||
+			newCfg.FeishuAppSecret != prev.FeishuAppSecret ||
+			newCfg.FeishuDomain != prev.FeishuDomain ||
+			newCfg.FeishuEnabled != prev.FeishuEnabled {
+			state.Logger.Info("飞书机器人配置已变更,重建长连接", "feishu")
+			go feishu.Reconfigure()
 		}
 
 		// TG 配置变更 → 同步发一条测试消息

@@ -1,23 +1,24 @@
 name: Docker
 
-# 只在打 tag 时触发。
+# 自动构建并推送镜像到 GitHub Container Registry（ghcr.io）。
 #
-# 仓库里另一个 CI 是纯手动（workflow_dispatch）—— 那是刻意的，
-# 不想每次 push 都烧 Actions 额度。这个也遵守同样的原则：
-# tag 是明确的发布动作，一次发布跑一次，不是每次提交都跑。
+# 触发方式：
+#   - push 到 main：打 latest / main / sha-<短SHA>，日常提交也能直接拉最新镜像
+#   - push v* tag：在语义版本号（1.2.3、1.2）之外仍然维护 latest
+#   - 手动 workflow_dispatch：可指定 tag；留空则构建当前分支 HEAD
 #
-# 注意：发布流程是本地 build.sh --release 创建 tag 和 Release。
-# 用个人 token 通过 API 创建 tag 会产生 push 事件，所以这个 workflow 会被触发。
-# 万一没触发（GitHub 对某些 token 创建的 tag 不派发事件），
-# 到 Actions 页面用 workflow_dispatch 手动跑一次，填那个 tag 即可。
+# 仓库里另一个 CI（ci.yml）仍然是纯手动的 —— 那个只跑检查，不构建产物、不碰 Release。
+# 这个 workflow 只负责镜像，两者互不干扰。
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "要构建的 tag（例 v0.1.16）。留空则用当前分支 HEAD"
+        description: "要构建的 tag（例 v0.4.16）。留空则用当前分支 HEAD"
         required: false
         type: string
 
@@ -42,8 +43,10 @@ jobs:
 
       - name: 核对 VERSION 与 tag 是否一致
         # 版本号是通过 ldflags 注入二进制的，前端和自更新都读它。
-        # 和 tag 对不上的话，用户装了 v0.1.16 的镜像、界面上显示 0.1.15，
+        # 和 tag 对不上时，用户装了 v0.4.16 的镜像、界面上显示 0.4.15，
         # 自更新还会以为有新版可更 —— 这种不一致很难查，不如在这里直接拦住。
+        # main 分支的自动构建没有 tag，跳过这项检查。
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
         run: |
           set -euo pipefail
           FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
@@ -51,7 +54,7 @@ jobs:
           TAG_VERSION="${RAW_REF#v}"
           echo "VERSION 文件: $FILE_VERSION"
           echo "tag:          $TAG_VERSION"
-          if [ "${{ github.event_name }}" = "push" ] && [ "$FILE_VERSION" != "$TAG_VERSION" ]; then
+          if [ "$FILE_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::VERSION 文件是 $FILE_VERSION，但 tag 是 $TAG_VERSION —— 两者必须一致"
             exit 1
           fi
@@ -75,15 +78,22 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # ghcr.io 的路径必须全小写，仓库名里有大写字母会直接被拒
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          # ghcr.io 的路径必须全小写，docker/metadata-action 会自动把仓库名转小写
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            # main 分支的每次提交：latest + main + sha-短SHA
+            # （手动指定 tag 构建时也会给 latest —— 那是明确的发布动作）
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            # v* tag：语义版本号（1.2.3 与 1.2）
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # 任何触发的可追溯标签，便于回滚到某次提交
+            type=sha,prefix=sha-,format=short
           labels: |
             org.opencontainers.image.title=OVH 控制台
-            org.opencontainers.image.description=OVH 服务器抢购 / 监控 / 生命周期管理
+            org.opencontainers.image.description=OVH 服务器抢购 / 监控 / 生命周期管理（PlanetSider fork）
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: 构建并推送
         uses: docker/build-push-action@v6

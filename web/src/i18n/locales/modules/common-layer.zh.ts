@@ -11,6 +11,11 @@ export const commonLayerZh = {
     logs: {
       cleared: "已清空日志",
     },
+    feishu: {
+      startFailed: "生成飞书二维码失败",
+      bindCodeFailed: "生成绑定码失败",
+      unbindFailed: "解除绑定失败",
+    },
     aliases: {
       saved: "别名已保存",
       cleared: "已清除别名",

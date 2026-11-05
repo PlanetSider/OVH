@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/feishu"
 	"github.com/ovh-buy/server/internal/telegram"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 // Channel 一条通知通道的状态
@@ -78,10 +80,40 @@ func BroadcastWithStatus(state *app.State, message string, replyMarkup map[strin
 			wh.OK = true
 		}
 	}
-	if delivered == 0 {
-		state.Logger.Error("这条通知一个通道都没送达,请检查 Telegram / Webhook 配置", "notify")
+	fs := feishuChannel(cfg)
+	if fs.Configured {
+		if err := feishu.SendAlert(message, replyMarkup); err != nil {
+			fs.Detail = err.Error()
+			state.Logger.Warn("飞书通知发送失败: "+err.Error(), "notify")
+		} else {
+			delivered++
+			fs.OK = true
+		}
 	}
-	return delivered, []Channel{tg, wh}
+	if delivered == 0 {
+		state.Logger.Error("这条通知一个通道都没送达,请检查 Telegram / Webhook / 飞书配置", "notify")
+	}
+	return delivered, []Channel{tg, wh, fs}
+}
+
+// feishuChannel 组装飞书(应用内私聊)通道的配置状态。
+// 注意它与设置页里"通知"的 Webhook 不是一回事:那条走群机器人,只能发文本;
+// 这条走自建应用长连接,能发带按钮的卡片。
+func feishuChannel(cfg types.Config) Channel {
+	ch := Channel{Name: "飞书"}
+	ch.Configured = cfg.FeishuEnabled && cfg.FeishuConfigured() && strings.TrimSpace(cfg.FeishuBoundOpenID) != ""
+	if ch.Configured {
+		return ch
+	}
+	switch {
+	case !cfg.FeishuEnabled:
+		ch.Detail = "未启用"
+	case !cfg.FeishuConfigured():
+		ch.Detail = "缺少 App ID / App Secret"
+	default:
+		ch.Detail = "未绑定接收人"
+	}
+	return ch
 }
 
 // sendWebhook 发文本消息,同时检查 HTTP 状态和常见的业务状态码。
@@ -182,7 +214,7 @@ func sendWebhook(webhookURL, message string) error {
 // 只想知道"配没配"就传 false —— 监控循环里每轮都调远端会白白打 API。
 func Status(state *app.State, verifyRemote bool) []Channel {
 	cfg := state.Config.Get()
-	out := make([]Channel, 0, 2)
+	out := make([]Channel, 0, 3)
 
 	tg := Channel{Name: "Telegram"}
 	tg.Configured = strings.TrimSpace(cfg.TgToken) != "" && strings.TrimSpace(cfg.TgChatID) != ""
@@ -216,6 +248,20 @@ func Status(state *app.State, verifyRemote bool) []Channel {
 	}
 	out = append(out, wh)
 
+	fs := feishuChannel(cfg)
+	if fs.Configured {
+		if verifyRemote {
+			if err := feishu.SendAlert("OVH 控制台:通知通道连通性测试", nil); err != nil {
+				fs.Detail = err.Error()
+			} else {
+				fs.OK = true
+			}
+		} else {
+			fs.OK = true
+		}
+	}
+	out = append(out, fs)
+
 	return out
 }
 
@@ -233,7 +279,7 @@ func AnyAvailable(state *app.State, verifyRemote bool) (bool, string) {
 		}
 	}
 	if len(reasons) == 0 {
-		return false, "没有配置任何通知通道(Telegram / Webhook)"
+		return false, "没有配置任何通知通道(Telegram / Webhook / 飞书)"
 	}
 	return false, strings.Join(reasons, "; ")
 }

@@ -56,12 +56,12 @@ func TestFetchOneErApiFormat(t *testing.T) {
 
 func TestFetchOneRejectsBadPayloads(t *testing.T) {
 	cases := map[string]string{
-		"没有 rates":       `{"base":"USD","rates":{}}`,
-		"基准不是 USD":      `{"base":"EUR","rates":{"CNY":7}}`,
-		"缺 CNY":          `{"base":"USD","rates":{"EUR":0.9}}`,
-		"CNY 为零":         `{"base":"USD","rates":{"CNY":0}}`,
-		"provider 报错":    `{"result":"error","error-type":"invalid-key"}`,
-		"不是 JSON":        `not json`,
+		"没有 rates":    `{"base":"USD","rates":{}}`,
+		"基准不是 USD":    `{"base":"EUR","rates":{"CNY":7}}`,
+		"缺 CNY":       `{"base":"USD","rates":{"EUR":0.9}}`,
+		"CNY 为零":      `{"base":"USD","rates":{"CNY":0}}`,
+		"provider 报错": `{"result":"error","error-type":"invalid-key"}`,
+		"不是 JSON":     `not json`,
 	}
 	for name, body := range cases {
 		srv := serveJSON(t, http.StatusOK, body)
