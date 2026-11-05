@@ -17,9 +17,12 @@ services:
     #   push 到 main → latest / main / sha-<短SHA>
     #   push v* tag → 语义版本号
     #
+    # 包名用 ovh-console 而不是 ovh：该账号下已有同名旧包（关联在别的仓库），
+    # GITHUB_TOKEN 无法跨仓库写入，会报 permission_denied: write_package。
+    #
     # ⚠️ 首次推送后，需要到 GitHub → Packages 里把这个包设为 Public，
     #    否则 docker compose pull 会因为未登录而失败（或者先 docker login ghcr.io）。
-    image: ghcr.io/planetsider/ovh:latest
+    image: ghcr.io/planetsider/ovh-console:latest
     container_name: ovh-console
     restart: unless-stopped
 

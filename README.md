@@ -60,7 +60,7 @@ OVHcloud 独立服务器 / VPS / Eco 系列的**抢购 + 补货监控 + 生命�
 
 ### 方式一：Docker Compose（推荐）
 
-镜像由本仓库的 GitHub Actions 自动构建并推到 GHCR：`ghcr.io/planetsider/ovh:latest`。
+镜像由本仓库的 GitHub Actions 自动构建并推到 GHCR：`ghcr.io/planetsider/ovh-console:latest`。
 
 ```bash
 git clone https://github.com/PlanetSider/OVH.git

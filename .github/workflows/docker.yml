@@ -24,7 +24,11 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # 注意：不能直接用 ${{ github.repository }}。
+  # 这个账号下已经有一个同名的旧包 ghcr.io/<owner>/ovh（关联在别的仓库上），
+  # GITHUB_TOKEN 没有跨仓库写包的权限，push 会报 permission_denied: write_package。
+  # 用独立的包名，包会由本仓库的 GITHUB_TOKEN 创建并自动关联到本仓库。
+  IMAGE_NAME: ${{ github.repository_owner }}/ovh-console
 
 jobs:
   build:
