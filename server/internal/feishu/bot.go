@@ -98,6 +98,11 @@ func (b *Bot) Start() {
 	ch.OnReady(func() {
 		b.markConnected()
 		b.state.Logger.Info("飞书长连接已就绪", "feishu")
+		// 配置刚变更/刚扫码创建时,这条连接是异步起来的:保存那一刻 ch 还是 nil,
+		// 直接发必然失败。所以由保存方登记意图,这里连上了再兑现。
+		if takeTestMessage() {
+			go b.sendTestMessage(ch)
+		}
 	})
 	ch.OnReconnecting(func() {
 		b.state.Logger.Warn("飞书长连接正在重连", "feishu")
@@ -122,8 +127,13 @@ func (b *Bot) Start() {
 			return nil
 		}
 		b.markEvent()
+		// 这条日志是排查"发消息没反应"的入口:能看到消息到了,才谈得上命令解析;
+		// 看不到就说明长连接/事件订阅/权限那一段没通。
+		b.state.Logger.Info(fmt.Sprintf("收到飞书消息: chat=%s type=%s user=%s text=%q",
+			clipRunes(msg.ChatID, 14), msg.ChatType, clipRunes(msg.UserID, 14), clipRunes(msg.Content, 40)), "feishu")
 		reply := clampReply(dispatchMessage(ctx, msg))
 		if reply == "" {
+			b.state.Logger.Warn("飞书消息没有产生回复(未绑定/非私聊/未授权/重复事件/处理器未注册)", "feishu")
 			return nil
 		}
 		if err := sendText(ctx, ch, msg.ChatID, msg.MessageID, reply); err != nil {
@@ -284,6 +294,96 @@ func (b *Bot) markEvent() {
 	b.mu.Lock()
 	b.lastEventAt = time.Now()
 	b.mu.Unlock()
+}
+
+// testMessageText 是连接建立后自动发的那条确认消息。
+// 和 Telegram 保存 Token 后发的测试消息对齐:让用户立刻知道"这条路通了",
+// 而不是等到下一次补货没收到才怀疑配置。
+const testMessageText = "OVH 控制台：飞书机器人已连接。\n发 /help 查看可用命令。"
+
+var (
+	testMu      sync.Mutex
+	pendingTest bool
+)
+
+// QueueTestMessage 登记"下一条连接就绪时发一条测试消息"。
+//
+// 只登记不发送:配置变更触发的是异步重连,此刻还没有可用的 Channel。
+func QueueTestMessage() {
+	testMu.Lock()
+	pendingTest = true
+	testMu.Unlock()
+}
+
+func takeTestMessage() bool {
+	testMu.Lock()
+	defer testMu.Unlock()
+	if !pendingTest {
+		return false
+	}
+	pendingTest = false
+	return true
+}
+
+func (b *Bot) sendTestMessage(ch channeltypes.Channel) {
+	if err := b.sendTestCore(ch); err != nil {
+		b.state.Logger.Warn("飞书测试消息未发送: "+err.Error(), "feishu")
+	}
+}
+
+// sendTestCore 是"配置变更后自动发"和网页"测试发送"按钮共用的发送逻辑。
+func (b *Bot) sendTestCore(ch channeltypes.Channel) error {
+	cfg := b.state.Config.Get()
+	openID := strings.TrimSpace(cfg.FeishuBoundOpenID)
+	if openID == "" {
+		// 手动填凭据但还没绑定的人会走到这里:连上了却没有收件人。
+		return fmt.Errorf("还没有绑定接收人")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := ch.Send(ctx, &channeltypes.SendInput{
+		UserID:  openID,
+		MsgType: "text",
+		Text:    testMessageText,
+	}); err != nil {
+		return err
+	}
+	b.state.Logger.Info("飞书测试消息已发送", "feishu")
+	return nil
+}
+
+// SendTestNow 立刻发一条测试消息（网页设置页的"测试发送"按钮）。
+//
+// 和自动测试消息的区别:自动那条要等 OnReady,用户看不到进度;
+// 这里把"连接未就绪/未绑定/发送失败"的原因直接带回页面,便于自查。
+func SendTestNow() error {
+	botMu.Lock()
+	b := bot
+	botMu.Unlock()
+	if b == nil {
+		return fmt.Errorf("飞书机器人未初始化")
+	}
+	return b.sendTestNow()
+}
+
+func (b *Bot) sendTestNow() error {
+	b.mu.Lock()
+	ch := b.ch
+	connected := b.connected
+	b.mu.Unlock()
+	if ch == nil || !connected {
+		return fmt.Errorf("长连接尚未就绪，请等几秒后重试；若一直未就绪，看上面的「连接状态」与 lastError")
+	}
+	return b.sendTestCore(ch)
+}
+
+// clipRunes 截断日志里的长字符串,避免一条消息刷满日志。
+func clipRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 func formatStatusTime(t time.Time) string {

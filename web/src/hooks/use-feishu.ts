@@ -106,6 +106,8 @@ export function useUnbindFeishu() {
     mutationFn: async () => (await api.post("/feishu/unbind")).data,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.settings.config() });
+      // 解绑后飞书通道立刻变成"未绑定接收人",别等 5 分钟缓存过期
+      void qc.invalidateQueries({ queryKey: ["notify", "channels"] });
       toast.success(i18n.t("settings.feishu.unbindToast"));
     },
     onError: (e: any) => toast.error(apiMessage(e) || i18n.t("hooksMsg.feishu.unbindFailed")),
@@ -151,5 +153,19 @@ export function useFeishuStatus() {
       return res.data.status;
     },
     refetchInterval: 10_000,
+  });
+}
+
+/**
+ * 手动发一条测试消息。
+ *
+ * 配置变更时后端会自动发一条，但那要等长连接 Ready，用户看不到进度；
+ * 这个按钮把"未就绪 / 未绑定 / 发送失败"的原因直接带回来。
+ */
+export function useSendFeishuTest() {
+  return useMutation({
+    mutationFn: async () => (await api.post("/feishu/test-send")).data,
+    onSuccess: () => toast.success(i18n.t("settings.feishu.testSentToast")),
+    onError: (e: any) => toast.error(apiMessage(e) || i18n.t("hooksMsg.feishu.testFailed")),
   });
 }

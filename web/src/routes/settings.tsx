@@ -474,7 +474,19 @@ function NotifySection({
                 )}
                 <span className="font-medium w-20 flex-shrink-0">{c.name}</span>
                 <span className="text-muted-foreground break-all">
-                  {!c.configured ? t("settings.notify.notConfigured") : c.ok ? t("settings.notify.available") : c.detail || t("settings.notify.unavailable")}
+                  {!c.configured ? (
+                    // 只说"未配置"用户没法判断差哪一步:飞书要凭据 + 启用 + 绑定三样,
+                    // 后端已经给出具体原因,别把它丢掉。
+                    c.detail ? (
+                      t("settings.notify.notConfiguredWithReason", { reason: c.detail })
+                    ) : (
+                      t("settings.notify.notConfigured")
+                    )
+                  ) : c.ok ? (
+                    t("settings.notify.available")
+                  ) : (
+                    c.detail || t("settings.notify.unavailable")
+                  )}
                 </span>
               </div>
             ))}

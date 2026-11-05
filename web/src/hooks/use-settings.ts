@@ -65,6 +65,9 @@ export function useSaveSettings() {
       qc.invalidateQueries({ queryKey: qk.settings.config() });
       // TG 配置可能变了,让监控对话框下次打开重新 verify
       qc.invalidateQueries({ queryKey: ["telegram", "verify"] });
+      // 通知通道体检缓存 5 分钟:保存完不失效的话,用户配好飞书后
+      // 这一栏还会继续显示"未配置",看起来像保存没生效。
+      qc.invalidateQueries({ queryKey: ["notify", "channels"] });
       toast.success(i18n.t("hooksMsg.settings.saved"));
     },
     onError: (e: any) => toast.error(apiMessage(e) || i18n.t("hooksMsg.settings.saveFailed")),

@@ -110,8 +110,12 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if newCfg.FeishuAppID != prev.FeishuAppID ||
 			newCfg.FeishuAppSecret != prev.FeishuAppSecret ||
 			newCfg.FeishuDomain != prev.FeishuDomain ||
-			newCfg.FeishuEnabled != prev.FeishuEnabled {
+			newCfg.FeishuEnabled != prev.FeishuEnabled ||
+			newCfg.FeishuBoundOpenID != prev.FeishuBoundOpenID {
 			state.Logger.Info("飞书机器人配置已变更,重建长连接", "feishu")
+			// 和 Telegram 保存 Token 后发测试消息对齐:让用户立刻知道"这条路通了"。
+			// 连接是异步建立的,此刻还没有 Channel,所以只登记意图,连上后再发。
+			feishu.QueueTestMessage()
 			go feishu.Reconfigure()
 		}
 

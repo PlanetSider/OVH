@@ -22,3 +22,17 @@ func GetFeishuStatus(_ *app.State) gin.HandlerFunc {
 		})
 	}
 }
+
+// SendFeishuTestMessage POST /api/feishu/test-send
+//
+// 设置页的"测试发送"按钮。返回具体原因而不是静默失败:
+// 未就绪/未绑定/发送报错三种情况用户要做的动作完全不同。
+func SendFeishuTestMessage(_ *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := feishu.SendTestNow(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "success"})
+	}
+}

@@ -20,6 +20,7 @@ const pack: CommonLayerPack = {
       startFailed: "Failed to generate the Feishu QR code",
       bindCodeFailed: "Failed to generate the binding code",
       unbindFailed: "Failed to unbind",
+      testFailed: "Failed to send test message",
     },
     aliases: {
       saved: "Alias saved",

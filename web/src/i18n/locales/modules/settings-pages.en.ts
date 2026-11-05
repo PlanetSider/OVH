@@ -81,6 +81,7 @@ const pack: SettingsPagesPack = {
       recheck: "Re-detect",
       detectFailedTitle: "Channel detection failed — the statuses below don't mean the channels are really unavailable",
       notConfigured: "Not configured",
+      notConfiguredWithReason: "Not configured ({{reason}})",
       available: "Available",
       unavailable: "Unavailable",
       noneAvailable: "No usable channels at all — monitoring can't run and restock alerts can't be sent",
@@ -394,6 +395,8 @@ const pack: SettingsPagesPack = {
       notConnectedWarning:
         "The long connection is not up, so commands from Feishu will not arrive. It reconnects automatically after you save the settings.",
       statusFailed: "Failed to read connection status",
+      testSend: "Send test",
+      testSentToast: "Test message sent — check your Feishu DM",
       enabled: "Enabled",
       scanTitle: "Scan to create (recommended)",
       scanHint: "Scan this QR code in Feishu and confirm creating the bot. The App ID is filled in automatically and your Feishu account is bound.",
@@ -410,6 +413,7 @@ const pack: SettingsPagesPack = {
       manualDesc:
         "If the scan channel is unavailable (e.g. the tenant restricts personal-agent apps), create an enterprise self-built app on the Feishu Open Platform and fill in its credentials here.",
       appIdLabel: "App ID",
+      appIdNotSaved: "Not saved yet",
       appIdHint: "From Credentials & Basic Info on the Open Platform, looks like cli_xxx.",
       appSecretLabel: "App Secret",
       appSecretPlaceholder: "Enter App Secret",

@@ -11,7 +11,7 @@
  */
 import { useEffect, useState, type ReactNode } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { AlertTriangle, CheckCircle2, KeyRound, Link2, MessageSquare, QrCode, RefreshCw, Unlink } from "lucide-react";
+import { AlertTriangle, CheckCircle2, KeyRound, Link2, MessageSquare, QrCode, RefreshCw, Send, Unlink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -28,6 +28,7 @@ import {
   useCreateFeishuBindingCode,
   useFeishuRegistrationPoll,
   useFeishuStatus,
+  useSendFeishuTest,
   useStartFeishuRegistration,
   useUnbindFeishu,
 } from "@/hooks/use-feishu";
@@ -80,6 +81,7 @@ export function FeishuSection({
   // 长连接状态:用后端真实连接态,不要用表单里的 enabled 猜 —— 表单改了还没保存时
   // 连接还是旧的,那正是用户最容易误判"我已经开了怎么没反应"的时刻。
   const status = useFeishuStatus();
+  const sendTest = useSendFeishuTest();
   const bot = status.data;
   const connection = !bot?.enabled
     ? "disabled"
@@ -105,6 +107,9 @@ export function FeishuSection({
       if (data.boundOpenId) set("feishuBoundOpenId", data.boundOpenId);
       setSession(null);
       void qc.invalidateQueries({ queryKey: qk.settings.config() });
+      // 扫码创建已经把凭据写进后端,通知通道那一栏必须跟着刷新,
+      // 否则会继续显示保存前的"未配置"。
+      void qc.invalidateQueries({ queryKey: ["notify", "channels"] });
       toast.success(t("settings.feishu.createdToast"));
     } else if (data.state === "denied" || data.state === "expired") {
       setSession(null);
@@ -144,16 +149,28 @@ export function FeishuSection({
             <MessageSquare className="w-3.5 h-3.5 text-muted-foreground" />
             {t("settings.feishu.statusTitle")}
           </h3>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => status.refetch()}
-            disabled={status.isFetching}
-          >
-            <RefreshCw className={cn("w-3.5 h-3.5", status.isFetching && "animate-spin")} />
-            {t("common.refresh")}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => sendTest.mutate()}
+              disabled={sendTest.isPending}
+            >
+              <Send className={cn("w-3.5 h-3.5", sendTest.isPending && "animate-pulse")} />
+              {t("settings.feishu.testSend")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => status.refetch()}
+              disabled={status.isFetching}
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", status.isFetching && "animate-spin")} />
+              {t("common.refresh")}
+            </Button>
+          </div>
         </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed">
           {t("settings.feishu.statusDesc")}
@@ -218,7 +235,15 @@ export function FeishuSection({
             />
             <InfoRow
               label={t("settings.feishu.appIdLabel")}
-              value={<span className="font-mono text-[12px]">{bot?.appId || "—"}</span>}
+              value={
+                bot?.appId ? (
+                  <span className="font-mono text-[12px]">{bot.appId}</span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    {t("settings.feishu.appIdNotSaved")}
+                  </span>
+                )
+              }
             />
             <InfoRow
               label={t("settings.feishu.domainLabel")}

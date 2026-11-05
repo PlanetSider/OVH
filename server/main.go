@@ -264,6 +264,7 @@ func main() {
 		// 长连接状态：飞书是主动连出去的，断线没有入站请求可依靠，
 		// 设置页只能靠这个接口判断"命令/下单/告警是不是一起静默失效了"。
 		api.GET("/feishu/status", handlers.GetFeishuStatus(state))
+		api.POST("/feishu/test-send", handlers.SendFeishuTestMessage(state))
 
 		// Logs / stats
 		api.GET("/logs", handlers.GetLogs(state))

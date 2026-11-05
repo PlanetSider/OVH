@@ -90,6 +90,9 @@ func PollFeishuRegistration(state *app.State) gin.HandlerFunc {
 				})
 				return
 			}
+			// 扫码创建后同样自动发一条确认:用户刚扫完码,这是唯一能证明
+			// "长连接真的通了"的反馈。
+			feishu.QueueTestMessage()
 			feishu.Reconfigure()
 			state.Logger.Info("飞书机器人凭据已保存,域名="+cfg.FeishuDomain, "feishu")
 			c.JSON(http.StatusOK, gin.H{

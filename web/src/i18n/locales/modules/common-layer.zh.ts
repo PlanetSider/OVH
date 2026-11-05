@@ -15,6 +15,7 @@ export const commonLayerZh = {
       startFailed: "生成飞书二维码失败",
       bindCodeFailed: "生成绑定码失败",
       unbindFailed: "解除绑定失败",
+      testFailed: "测试消息发送失败",
     },
     aliases: {
       saved: "别名已保存",
