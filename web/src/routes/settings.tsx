@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/common/Skeleton";
 import { Chip } from "@/components/common/Chip";
@@ -31,7 +32,7 @@ import {
   type SettingsConfig,
 } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
-import { useNotifyChannels, useTestNotification } from "@/hooks/use-notify-channels";
+import { useNotifyChannels, useTestNotification, useVerifyNotifyChannels } from "@/hooks/use-notify-channels";
 import { cn } from "@/lib/utils";
 import { OVH_SUBSIDIARIES, subsidiaryLabel } from "@/lib/ovh-subsidiaries";
 import { apiBaseUrlForEndpoint } from "@/lib/ovh-regions";
@@ -432,10 +433,13 @@ function NotifySection({
   set,
 }: {
   form: SettingsConfig;
-  set: (k: keyof SettingsConfig, v: string) => void;
+  set: <K extends keyof SettingsConfig>(k: K, v: SettingsConfig[K]) => void;
 }) {
   const { t } = useTranslation();
-  const channels = useNotifyChannels(true);
+  // 展示用：不触发远端体检。verify=true 会真的给每个通道发一条测试消息，
+  // 打开页面就发消息是不可接受的副作用。
+  const channels = useNotifyChannels(false);
+  const verify = useVerifyNotifyChannels();
   const test = useTestNotification();
 
   return (
@@ -447,10 +451,10 @@ function NotifySection({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => channels.refetch()}
-            disabled={channels.isFetching}
+            onClick={() => verify.mutate()}
+            disabled={verify.isPending}
           >
-            <RefreshCw className={cn("w-3.5 h-3.5", channels.isFetching && "animate-spin")} />
+            <RefreshCw className={cn("w-3.5 h-3.5", verify.isPending && "animate-spin")} />
             {t("settings.notify.recheck")}
           </Button>
         </div>
@@ -499,16 +503,31 @@ function NotifySection({
                 {t("settings.notify.noneAvailable")}
               </p>
             )}
+            {channels.data && !channels.data.verified && (
+              <p className="text-[11px] text-muted-foreground pt-1">
+                {t("settings.notify.unverifiedHint")}
+              </p>
+            )}
           </div>
         )}
       </div>
 
       <Field label={t("settings.notify.webhookLabel")}>
-        <Input
-          value={form.notifyWebhookUrl || ""}
-          onChange={(e) => set("notifyWebhookUrl", e.target.value)}
-          placeholder={t("settings.notify.webhookPlaceholder")}
-        />
+        <div className="flex items-center gap-2">
+          <Input
+            className="flex-1"
+            value={form.notifyWebhookUrl || ""}
+            onChange={(e) => set("notifyWebhookUrl", e.target.value)}
+            placeholder={t("settings.notify.webhookPlaceholder")}
+          />
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground shrink-0">
+            <Switch
+              checked={form.webhookEnabled ?? true}
+              onCheckedChange={(v) => set("webhookEnabled", v)}
+            />
+            {t("settings.notify.channelEnabled")}
+          </label>
+        </div>
         <p className="text-[11px] text-muted-foreground mt-1">
           {t("settings.notify.webhookHintPre")}<b>{t("settings.notify.webhookHintBold")}</b>{t("settings.notify.webhookHintMid")}
           <code className="mx-1 px-1 rounded bg-muted">text</code>
@@ -519,22 +538,42 @@ function NotifySection({
       </Field>
 
       <Field label={t("settings.notify.serverChanLabel")}>
-        <Input
-          value={form.serverChanUrl || ""}
-          onChange={(e) => set("serverChanUrl", e.target.value)}
-          placeholder={t("settings.notify.serverChanPlaceholder")}
-        />
+        <div className="flex items-center gap-2">
+          <Input
+            className="flex-1"
+            value={form.serverChanUrl || ""}
+            onChange={(e) => set("serverChanUrl", e.target.value)}
+            placeholder={t("settings.notify.serverChanPlaceholder")}
+          />
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground shrink-0">
+            <Switch
+              checked={form.serverChanEnabled ?? true}
+              onCheckedChange={(v) => set("serverChanEnabled", v)}
+            />
+            {t("settings.notify.channelEnabled")}
+          </label>
+        </div>
         <p className="text-[11px] text-muted-foreground mt-1">
           {t("settings.notify.serverChanHint")}
         </p>
       </Field>
 
       <Field label={t("settings.notify.meowLabel")}>
-        <Input
-          value={form.meowNickname || ""}
-          onChange={(e) => set("meowNickname", e.target.value)}
-          placeholder={t("settings.notify.meowPlaceholder")}
-        />
+        <div className="flex items-center gap-2">
+          <Input
+            className="flex-1"
+            value={form.meowNickname || ""}
+            onChange={(e) => set("meowNickname", e.target.value)}
+            placeholder={t("settings.notify.meowPlaceholder")}
+          />
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground shrink-0">
+            <Switch
+              checked={form.meowEnabled ?? true}
+              onCheckedChange={(v) => set("meowEnabled", v)}
+            />
+            {t("settings.notify.channelEnabled")}
+          </label>
+        </div>
         <p className="text-[11px] text-muted-foreground mt-1">
           {t("settings.notify.meowHint")}
         </p>

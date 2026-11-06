@@ -130,6 +130,9 @@ const pack: CommonLayerPack = {
       unknownReason: "unknown reason",
       sentToChannels: "Sent to {{count}} channel(s)",
       sendFailed: "Failed to send",
+      verifyOk: "Check complete: all configured channels are available",
+      verifyPartial: "Check complete, but {{names}} unavailable",
+      detectFailed: "Channel check failed",
     },
     history: {
       statusUpdated: "{{count}} order(s) have status updates",

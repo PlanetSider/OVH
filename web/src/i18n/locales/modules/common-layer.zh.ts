@@ -124,6 +124,9 @@ export const commonLayerZh = {
       unknownReason: "未知原因",
       sentToChannels: "已发往 {{count}} 个通道",
       sendFailed: "发送失败",
+      verifyOk: "检测完成：所有已配置通道都可用",
+      verifyPartial: "检测完成，但 {{names}} 不可用",
+      detectFailed: "通道检测失败",
     },
     history: {
       statusUpdated: "{{count}} 条订单状态有更新",

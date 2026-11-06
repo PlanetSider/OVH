@@ -45,6 +45,13 @@ export interface SettingsConfig {
   serverChanUrl?: string;
   /** MeoW 推送昵称，消息发到 https://api.chuckfang.com/<昵称> */
   meowNickname?: string;
+  /**
+   * 通道独立开关。undefined / true 都按「开」处理（后端 nil 同样默认开），
+   * 只有显式 false 才停发；停用时保留配置，不必删掉地址。
+   */
+  webhookEnabled?: boolean;
+  serverChanEnabled?: boolean;
+  meowEnabled?: boolean;
 
   /**
    * 每日定时播报。分类开关用 *bool 语义：后端缺省时按「开」处理，

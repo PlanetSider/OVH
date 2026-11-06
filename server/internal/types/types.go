@@ -58,6 +58,16 @@ type Config struct {
 	// MeowNickname MeoW 推送昵称,消息发到 https://api.chuckfang.com/<昵称>。
 	MeowNickname string `json:"meowNickname,omitempty"`
 
+	// —— 通道开关 ——
+	// 用 *bool 而不是 bool：老配置里没有这几个字段，nil 必须按「开」处理，
+	// 否则升级后已经填好的通道会全部静默失效。
+	//
+	// 为什么要独立开关：填了地址 ≠ 想收消息。临时停一个通道（比如 MeoW
+	// 每天额度用完、公司 webhook 在维护）时，用户不该被迫删掉配置再重填。
+	WebhookEnabled    *bool `json:"webhookEnabled,omitempty"`
+	ServerChanEnabled *bool `json:"serverChanEnabled,omitempty"`
+	MeowEnabled       *bool `json:"meowEnabled,omitempty"`
+
 	// —— 定时播报（每日一次，把当前任务/订阅/战报发到所有已配置的通知通道） ——
 	//
 	// 为什么用 *bool 而不是 bool：旧配置里根本没有这些键，读出来是零值 false。
@@ -151,6 +161,20 @@ func flagDefault(v *bool, def bool) bool {
 		return def
 	}
 	return *v
+}
+
+// IsWebhookEnabled 通用 Webhook 开关（默认开）。
+// 只要地址非空且开关为开才会真的发；临时停用时保留配置。
+func (c Config) IsWebhookEnabled() bool {
+	return flagDefault(c.WebhookEnabled, true)
+}
+
+func (c Config) IsServerChanEnabled() bool {
+	return flagDefault(c.ServerChanEnabled, true)
+}
+
+func (c Config) IsMeowEnabled() bool {
+	return flagDefault(c.MeowEnabled, true)
 }
 
 // IsTaskBroadcastEnabled 每日定时播报总开关（默认关）。

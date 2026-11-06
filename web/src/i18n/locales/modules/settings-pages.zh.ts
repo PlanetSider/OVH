@@ -102,6 +102,8 @@ export const settingsPagesZh = {
       available: "可用",
       unavailable: "不可用",
       noneAvailable: "一条可用通道都没有 —— 监控会跑不起来，也发不出补货提醒",
+      unverifiedHint:
+        "上面的状态来自已保存的配置，本次没有做真实连通性检测。点「重新检测」会向每个已启用通道发一条测试消息。",
       webhookLabel: "自定义 Webhook 地址（可选）",
       webhookPlaceholder: "https://your.server/notify 或钉钉/飞书机器人地址",
       webhookHintPre: "方向是 ",
@@ -120,6 +122,7 @@ export const settingsPagesZh = {
       sending: "发送中…",
       sendTest: "发一条测试通知",
       testHint: "会往所有已配置的通道各发一条。先保存设置再测 —— 测的是已保存的配置，不是输入框里的",
+      channelEnabled: "启用",
     },
     telegram: {
       title: "Telegram 通知",

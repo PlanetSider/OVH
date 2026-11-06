@@ -62,7 +62,7 @@ func BroadcastWithStatus(state *app.State, message string, replyMarkup map[strin
 	delivered := 0
 	cfg := state.Config.Get()
 	tg := Channel{Name: "Telegram", Configured: strings.TrimSpace(cfg.TgToken) != "" && strings.TrimSpace(cfg.TgChatID) != ""}
-	wh := Channel{Name: "Webhook", Configured: strings.TrimSpace(cfg.NotifyWebhookURL) != ""}
+	wh := Channel{Name: "Webhook", Configured: strings.TrimSpace(cfg.NotifyWebhookURL) != "" && cfg.IsWebhookEnabled()}
 	if tg.Configured {
 		if telegram.SendMessage(state, message, replyMarkup) {
 			delivered++
@@ -90,7 +90,7 @@ func BroadcastWithStatus(state *app.State, message string, replyMarkup map[strin
 			fs.OK = true
 		}
 	}
-	sc := Channel{Name: "Server酱³", Configured: strings.TrimSpace(cfg.ServerChanURL) != ""}
+	sc := Channel{Name: "Server酱³", Configured: strings.TrimSpace(cfg.ServerChanURL) != "" && cfg.IsServerChanEnabled()}
 	if sc.Configured {
 		if err := sendServerChan(cfg.ServerChanURL, message); err != nil {
 			sc.Detail = err.Error()
@@ -100,7 +100,7 @@ func BroadcastWithStatus(state *app.State, message string, replyMarkup map[strin
 			sc.OK = true
 		}
 	}
-	meow := Channel{Name: "MeoW", Configured: strings.TrimSpace(cfg.MeowNickname) != ""}
+	meow := Channel{Name: "MeoW", Configured: strings.TrimSpace(cfg.MeowNickname) != "" && cfg.IsMeowEnabled()}
 	if meow.Configured {
 		if err := sendMeow(cfg.MeowNickname, message); err != nil {
 			meow.Detail = err.Error()
@@ -350,7 +350,7 @@ func Status(state *app.State, verifyRemote bool) []Channel {
 
 	wh := Channel{Name: "Webhook"}
 	url := strings.TrimSpace(cfg.NotifyWebhookURL)
-	wh.Configured = url != ""
+	wh.Configured = url != "" && cfg.IsWebhookEnabled()
 	if wh.Configured {
 		if verifyRemote {
 			if err := sendWebhook(url, "OVH 控制台:通知通道连通性测试"); err != nil {
@@ -361,8 +361,10 @@ func Status(state *app.State, verifyRemote bool) []Channel {
 		} else {
 			wh.OK = true
 		}
-	} else {
+	} else if url == "" {
 		wh.Detail = "未配置"
+	} else {
+		wh.Detail = "已关闭"
 	}
 	out = append(out, wh)
 
@@ -382,7 +384,7 @@ func Status(state *app.State, verifyRemote bool) []Channel {
 
 	sc := Channel{Name: "Server酱³"}
 	scURL := strings.TrimSpace(cfg.ServerChanURL)
-	sc.Configured = scURL != ""
+	sc.Configured = scURL != "" && cfg.IsServerChanEnabled()
 	if sc.Configured {
 		if verifyRemote {
 			if err := sendServerChan(scURL, "OVH 控制台:通知通道连通性测试"); err != nil {
@@ -393,14 +395,16 @@ func Status(state *app.State, verifyRemote bool) []Channel {
 		} else {
 			sc.OK = true
 		}
-	} else {
+	} else if scURL == "" {
 		sc.Detail = "未配置"
+	} else {
+		sc.Detail = "已关闭"
 	}
 	out = append(out, sc)
 
 	meow := Channel{Name: "MeoW"}
 	meowNick := strings.TrimSpace(cfg.MeowNickname)
-	meow.Configured = meowNick != ""
+	meow.Configured = meowNick != "" && cfg.IsMeowEnabled()
 	if meow.Configured {
 		if verifyRemote {
 			if err := sendMeow(meowNick, "OVH 控制台:通知通道连通性测试"); err != nil {
@@ -411,8 +415,10 @@ func Status(state *app.State, verifyRemote bool) []Channel {
 		} else {
 			meow.OK = true
 		}
-	} else {
+	} else if meowNick == "" {
 		meow.Detail = "未配置"
+	} else {
+		meow.Detail = "已关闭"
 	}
 	out = append(out, meow)
 

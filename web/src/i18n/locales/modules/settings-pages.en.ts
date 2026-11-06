@@ -111,6 +111,8 @@ const pack: SettingsPagesPack = {
       available: "Available",
       unavailable: "Unavailable",
       noneAvailable: "No usable channels at all — monitoring can't run and restock alerts can't be sent",
+      unverifiedHint:
+        "The statuses above come from the saved configuration; no real connectivity check was made. Click “Re-detect” to send one test message to every enabled channel.",
       webhookLabel: "Custom webhook URL (optional)",
       webhookPlaceholder: "https://your.server/notify or a DingTalk/Feishu bot URL",
       webhookHintPre: "Direction: ",
@@ -130,6 +132,7 @@ const pack: SettingsPagesPack = {
       sendTest: "Send a test notification",
       testHint:
         "Sends one message to every configured channel. Save settings before testing — the test uses the saved config, not what's in the input boxes",
+      channelEnabled: "Enabled",
     },
     telegram: {
       title: "Telegram notifications",
