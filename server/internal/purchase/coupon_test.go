@@ -51,6 +51,17 @@ func TestPurchaseCouponBeforeCheckout(t *testing.T) {
 			defer database.Close()
 			lg := logger.New(filepath.Join(dir, "test.log"), slog.New(slog.NewTextHandler(io.Discard, nil)))
 			st := app.NewState(storage.Paths{DataDir: dir}, config.New(database), lg, database)
+			defer func() {
+				st.HistoryMu.Lock()
+				ordered := len(st.History) > 0 && st.History[0].Status == "success"
+				st.HistoryMu.Unlock()
+				if ordered {
+					waitWarm(t, func() bool {
+						rows, err := database.ListHistory()
+						return err == nil && len(rows) > 0 && rows[0].OrderStatus != ""
+					})
+				}
+			}()
 			st.Accounts = []types.OVHAccount{{ID: "eu", Endpoint: "ovh-eu", Zone: "PT", AppKey: "test", AppSecret: "test", ConsumerKey: "test"}}
 			cfg := st.Config.Get()
 			cfg.NotifyWebhookURL = "https://coupon-notify.invalid/test"
@@ -83,7 +94,7 @@ func TestPurchaseCouponBeforeCheckout(t *testing.T) {
 				case strings.HasSuffix(path, "/auth/time"):
 					body = fmt.Sprint(time.Now().Unix())
 				case strings.Contains(path, "/order/catalog/public/eco"):
-					body = `{"plans":[{"planCode":"24sk202"}]}`
+					body = `{"plans":[{"planCode":"24sk202","configurations":[{"name":"dedicated_datacenter","values":["gra"]}]}]}`
 				case strings.Contains(path, "/dedicated/server/datacenter/availabilities"):
 					body = `[{"fqn":"24sk202","datacenters":[{"datacenter":"gra","availability":"1H-low"}]}]`
 				case strings.HasSuffix(path, "/order/cart") && r.Method == "POST":
@@ -92,9 +103,13 @@ func TestPurchaseCouponBeforeCheckout(t *testing.T) {
 				case strings.HasSuffix(path, "/order/cart/coupon-cart") && r.Method == "GET":
 					body = `{"items":[1]}`
 				case strings.HasSuffix(path, "/order/cart/coupon-cart/item/1") && r.Method == "GET":
-					body = `{"itemId":1,"duration":"P1M","options":[]}`
+					body = `{"itemId":1,"duration":"P1M","options":[],"settings":{"planCode":"24sk202"}}`
 				case strings.HasSuffix(path, "/coupon-cart/assign"):
 					steps = append(steps, "assign")
+				case strings.HasSuffix(path, "/coupon-cart/eco") && r.Method == "GET":
+					body = `[{"planCode":"24sk202","prices":[{"duration":"P1M","pricingMode":"default","price":{"value":30,"currencyCode":"EUR"}}]}]`
+				case strings.HasSuffix(path, "/coupon-cart/eco/options") && r.Method == "GET":
+					body = `[]`
 				case strings.HasSuffix(path, "/coupon-cart/eco") && r.Method == "POST":
 					steps = append(steps, "item")
 					body = `{"itemId":1}`

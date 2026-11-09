@@ -31,6 +31,9 @@ type Outcome struct {
 	Success           bool
 	WaitingForStock   bool
 	WaitingForCatalog bool
+	WaitingForQuota   bool
+	GroupStopped      string
+	RetryAfter        time.Duration
 	// Fatal:确定性失败,重试多少次结果都一样。队列处理器据此把任务直接置 failed。
 	// 只有"换个时间点重试也必然是同一个结果"才允许置 true ——
 	// 网络 / 429 / OVH 5xx / 无货 一律不是 Fatal。
@@ -74,7 +77,23 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	if found, err := state.DB.GetKV(db.QueueCheckoutKey(item.ID), &map[string]interface{}{}); err != nil {
 		return Outcome{PauseTask: true, Reason: "无法核对结账登记,未发起下单: " + err.Error()}
 	} else if found {
+		_ = state.DB.MarkQueueOrder(*item, "uncertain")
 		return Outcome{PauseTask: true, Reason: "此任务已有结账登记,请先核对 OVH 订单后再决定是否恢复任务"}
+	}
+	if item.OrderGroup != "" {
+		quota, err := state.DB.QueueQuota(*item)
+		if err != nil {
+			return Outcome{PauseTask: true, Reason: "无法核对总购买量: " + err.Error()}
+		}
+		if quota.Uncertain > 0 {
+			return Outcome{GroupStopped: "groupUncertain"}
+		}
+		if quota.Ordered >= item.GroupLimit {
+			return Outcome{GroupStopped: "groupComplete"}
+		}
+		if quota.Reserved >= item.GroupLimit {
+			return Outcome{WaitingForQuota: true}
+		}
 	}
 	session, managed := ctx.Value(cartSessionKey{}).(*cartSession)
 	if !managed {
@@ -92,27 +111,46 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		return Outcome{Fatal: true, Reason: errMsg}
 	}
 	item.AccountID = session.accountID
-	if session.cart != nil && (session.cart.duration == "" || !orderterm.Same(session.cart.duration, selectedDuration)) {
-		session.discard()
+	if item.Preorder {
+		signal, _ := ctx.Value(saleSignalKey{}).(saleSnapshot)
+		until := signal.retryAt
+		if session.sale.retryAt.After(until) {
+			until = session.sale.retryAt
+		}
+		if until.After(time.Now()) {
+			return Outcome{WaitingForCatalog: true, Reason: "销售接口等待重试", RetryAfter: time.Until(until)}
+		}
+	}
+	tl := newTimeline()
+	tl.dispatchKey = item.AccountID + "\x00" + TimingKey(item.PlanCode, ovh.ConvertDisplayDCToAPIDC(item.Datacenter))
+	intent := preparationKey(*item, session.account)
+	if session.cart != nil && (session.cart.intent != intent || !time.Now().Before(session.cart.expires)) {
+		session.cart.cleanupInBackground()
+		session.cart = nil
 		session.nextPrepare = time.Time{}
 	}
-	if item.Preorder && session.cart == nil {
-		ready, err := catalog.PreorderReady(state, item.AccountID, item.PlanCode)
-		if ctx.Err() != nil {
-			return cancelledOutcome(state, item, "等上架")
-		}
-		if err != nil || !ready {
-			state.Logger.Info(fmt.Sprintf("预订任务 %s 等待 %s 上架到下单账户的销售目录", item.ID, item.PlanCode), "purchase")
-			if err != nil {
-				state.Logger.Warn("预订任务查询销售目录失败，本轮继续等待: "+err.Error(), "purchase")
+	if session.cart == nil {
+		if pool, ok := state.OrderPrewarm.(*CartPool); ok {
+			if prepared := pool.Take(*item); prepared != nil {
+				session.cart, session.client, client = prepared, prepared.client, prepared.client
 			}
-			return Outcome{WaitingForCatalog: true}
 		}
 	}
 
+	preorderStock, preorderOrder := item.Options, item.Options
+	if item.Preorder {
+		if session.cart != nil {
+			// The cart was verified against this exact intent; a catalog refresh is not on the dispatch path.
+			preorderStock, preorderOrder = session.cart.stockOptions, session.cart.orderOptions
+		} else {
+			preorderStock, preorderOrder, err = catalog.ResolvePreorderOptions(state, item.AccountID, item.PlanCode, item.Options)
+			if err != nil {
+				state.Logger.Info("预订等待配置目录: "+err.Error(), "purchase")
+				return Outcome{WaitingForCatalog: true, Reason: err.Error()}
+			}
+		}
+	}
 	// 每一轮都打点。抢购的胜负常常只差几百毫秒,而"差在哪"没有数字就只能靠猜。
-	tl := newTimeline()
-	tl.dispatchKey = item.AccountID + "\x00" + TimingKey(item.PlanCode, ovh.ConvertDisplayDCToAPIDC(item.Datacenter))
 	timingKey := item.ID
 	if timingKey == "" {
 		timingKey = TimingKey(item.PlanCode, item.Datacenter)
@@ -123,7 +161,25 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	q := url.Values{}
 	q.Set("planCode", item.PlanCode)
 	detectedAt := time.Time{}
-	if signal, ok := ctx.Value(stockSignalKey{}).(app.StockSignal); ok && signal.AccountID == session.accountID && signal.PlanCode == item.PlanCode && time.Since(signal.DetectedAt) < time.Second {
+	pinnedFQN := ""
+	if sale, ok := ctx.Value(saleSignalKey{}).(saleSnapshot); item.Preorder && ok && sale.fresh(session.account, item.PlanCode) {
+		if session.cart != nil {
+			pinnedFQN = session.cart.fqn
+		} else if p := session.partial; p != nil && p.intent == intent && p.client == client && time.Now().Before(p.expires) {
+			pinnedFQN = p.fqn
+		}
+		// Only a fully specified, previously verified configuration can bypass another stock RTT.
+		if len(preorderStock) == 0 || len(strings.Split(pinnedFQN, "."))-1 != len(preorderStock) || !preorderFQNCoversOptions(pinnedFQN, preorderStock) {
+			pinnedFQN = ""
+		}
+		if pinnedFQN != "" {
+			detectedAt = sale.at
+		}
+	}
+	if pinnedFQN != "" {
+		// This is the saved preparation, not a claim of fresh available inventory. Checkout still requires all live quotes.
+		availabilities = []map[string]interface{}{{"fqn": pinnedFQN, "datacenters": []interface{}{map[string]interface{}{"datacenter": ovh.ConvertDisplayDCToAPIDC(item.Datacenter)}}}}
+	} else if signal, ok := ctx.Value(stockSignalKey{}).(app.StockSignal); ok && signal.AccountID == session.accountID && signal.PlanCode == item.PlanCode && time.Since(signal.DetectedAt) < time.Second {
 		availabilities, detectedAt = signal.Variants, signal.DetectedAt
 	} else {
 		observation, err := state.StockSignals.Fetch(ctx, session.accountID, item.PlanCode, func() ([]map[string]interface{}, error) {
@@ -145,7 +201,11 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		availabilities, detectedAt = observation.Variants, observation.DetectedAt
 	}
 
-	tl.mark("查库存")
+	if pinnedFQN != "" {
+		tl.mark("复用已核验配置")
+	} else {
+		tl.mark("查库存")
+	}
 
 	// 空数组 ≠ 暂时没货。OVH 三个站点的机型目录彼此独立,拿别的站点的 planCode 查
 	// /dedicated/server/datacenter/availabilities 同样是 HTTP 200 + [](实测:
@@ -169,16 +229,25 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	wantedHW := fqnRelevantOptions(availabilities, item.Options)
 	if item.Preorder {
 		// 预订保存的是原始 FQN 硬件段;参数消失也不能忽略它后改买其他配置。
-		wantedHW = item.Options
+		wantedHW = preorderStock
 	}
 	candidates := availabilities
+	if item.Preorder {
+		candidates = nil
+		for _, av := range availabilities {
+			fqn, _ := av["fqn"].(string)
+			if strings.EqualFold(strings.SplitN(fqn, ".", 2)[0], item.PlanCode) {
+				candidates = append(candidates, av)
+			}
+		}
+	}
 	if len(wantedHW) > 0 {
 		matchedAvs := []map[string]interface{}{}
-		for _, av := range availabilities {
+		for _, av := range candidates {
 			fqn, _ := av["fqn"].(string)
 			matches := fqnCoversOptions(fqn, wantedHW)
 			if item.Preorder {
-				matches = preorderFQNCoversOptions(fqn, wantedHW)
+				matches = preorderFQNCoversOptions(fqn, wantedHW) && strings.EqualFold(strings.SplitN(fqn, ".", 2)[0], item.PlanCode)
 			}
 			if matches {
 				matchedAvs = append(matchedAvs, av)
@@ -194,7 +263,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 			state.Logger.Info(fmt.Sprintf("服务器 %s 没有任何配置组合同时包含所选硬件 %v，视为该配置无货",
 				item.PlanCode, wantedHW), "purchase")
 			recordTiming(timingKey, tl, "unavailable")
-			return Outcome{}
+			return Outcome{WaitingForStock: true}
 		}
 	}
 
@@ -244,7 +313,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		// 没有该配置/机房时不能猜配置造车;目录未上架仍按原逻辑等待。
 		if availableFQN == "" {
 			recordTiming(timingKey, tl, "unavailable")
-			return Outcome{}
+			return Outcome{WaitingForStock: true}
 		}
 	}
 
@@ -252,45 +321,62 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	// - 用户显式指定了 options → 直接用（fail-fast 由后面的 eco/options 处理）
 	// - 用户没指定 → 从可用 FQN 推断 addon planCode，确保订单走"实际有货的那套配置"
 	effectiveOptions := configurationOptions(availableFQN, item.Options)
-
-	if session.cart == nil {
-		if pool, ok := state.OrderPrewarm.(*CartPool); ok {
-			if prepared := pool.Take(*item); prepared != nil {
-				if prepared.fqn == availableFQN {
-					session.cart, session.client, client = prepared, prepared.client, prepared.client
-				} else {
-					prepared.cleanup()
-				}
-			}
-		}
+	if item.Preorder {
+		effectiveOptions = preorderConfigurationOptions(availableFQN, preorderStock, preorderOrder)
 	}
+
 	ready := session.cart != nil && session.cart.fqn == availableFQN && session.cart.duration != "" && orderterm.Same(session.cart.duration, selectedDuration) && time.Now().Before(session.cart.expires)
 	prewarmed := ready && session.cart.preparedAt.Before(detectedAt)
 	if !ready {
-		if !foundAvailable && time.Now().Before(session.nextPrepare) {
-			return Outcome{WaitingForStock: true}
+		if !foundAvailable && session.partial == nil && time.Now().Before(session.nextPrepare) {
+			if _, ok := ctx.Value(saleSignalKey{}).(saleSnapshot); !ok {
+				return Outcome{WaitingForStock: true}
+			}
 		}
 		session.nextPrepare = time.Now().Add(30 * time.Second)
-		session.discard()
-		prepared, outcome := prepareCart(ctx, state, item, session.account, client, effectiveOptions, apiDC, tl, timingKey, !foundAvailable)
+		if item.Preorder {
+			session.nextPrepare = time.Now().Add(catalog.PreorderCheckInterval)
+		}
+		if session.cart != nil {
+			session.cart.cleanup()
+			session.cart = nil
+		}
+		prepared, outcome := prepareCart(ctx, state, item, session.account, client, effectiveOptions, apiDC, availableFQN, tl, timingKey, !foundAvailable)
 		if prepared == nil {
+			if outcome.WaitingForCatalog {
+				return outcome
+			}
 			if !foundAvailable && !outcome.Cancelled {
 				return Outcome{WaitingForStock: true}
 			}
 			return outcome
 		}
-		prepared.fqn = availableFQN
+		prepared.stockOptions = append([]string(nil), preorderStock...)
+		prepared.orderOptions = append([]string(nil), preorderOrder...)
 		session.cart = prepared
 	}
 	cart := session.cart
 	subsidiary := cart.subsidiary
 	couponWarning := cart.couponWarning
+	if item.Preorder {
+		sale, out := preorderSaleQuote(ctx, session, cart, item)
+		if out.WaitingForCatalog || out.Cancelled {
+			if out.RetryImmediately {
+				cart.cleanup()
+				session.cart = nil
+				session.nextPrepare = time.Time{}
+				invalidateEcoOptions(state, item, session.account)
+			}
+			return out
+		}
+		foundAvailable = true
+		detectedAt = sale.at
+		prewarmed = cart.preparedAt.Before(detectedAt)
+	}
 	if !foundAvailable {
 		recordTiming(timingKey, tl, "unavailable")
 		return Outcome{WaitingForStock: true}
 	}
-	// 直接结账 —— 不在库存命中后重复读取 /summary,
-	// 价格 + 过期时间下面 checkout 成功后用 /me/order 异步补,不阻塞主流程。
 	// 结账前最后一次复核。这是整条链路里唯一真正花钱的一步,也是取消能起作用的
 	// 最后一个点 —— 从这里往下,结账请求一旦发出就**不再接受取消**:
 	// 请求已经到了 OVH、我们这边却中途断开,订单可能已经生成而我们不知道,
@@ -298,16 +384,26 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	if ctx.Err() != nil || state.IsTaskDeleted(item.ID) {
 		return cancelledOutcome(state, item, "结账前复核")
 	}
+	if !time.Now().Before(cart.expires) {
+		cart.cleanupInBackground()
+		session.cart = nil
+		session.nextPrepare = time.Time{}
+		return Outcome{RetryImmediately: true}
+	}
 	currentAccount, exists := state.FindAccount(cart.account.ID)
 	if !exists || !ovh.SameClientConfiguration(currentAccount, cart.account) || currentAccount.Zone != cart.account.Zone {
 		return cancelledOutcome(state, item, "账户配置已变化")
 	}
-	claimed, err := state.DB.ClaimQueueCheckout(item.ID)
+	claimed, err := state.DB.ClaimQueueOrder(*item)
+	if err == nil && !claimed && item.OrderGroup != "" {
+		return Outcome{WaitingForQuota: true}
+	}
 	if err != nil || !claimed {
 		return Outcome{PauseTask: true, Reason: "结账登记失败或任务已有结账请求,请先核对 OVH 订单"}
 	}
+	setOrderPhase(state, item.ID, "submitting")
 	if ctx.Err() != nil || state.IsTaskDeleted(item.ID) {
-		_ = state.DB.DeleteKV(db.QueueCheckoutKey(item.ID))
+		_ = state.DB.ReleaseQueueOrder(*item)
 		return cancelledOutcome(state, item, "结账登记后复核")
 	}
 	var checkoutResult map[string]interface{}
@@ -333,7 +429,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 			} else {
 				cart.cleanup()
 			}
-			if releaseErr := state.DB.DeleteKV(db.QueueCheckoutKey(item.ID)); releaseErr != nil {
+			if releaseErr := state.DB.ReleaseQueueOrder(*item); releaseErr != nil {
 				recordFailureStatus(state, item, "结账被拒绝但登记未能清除,请人工核对: "+releaseErr.Error(), "uncertain")
 				return Outcome{PauseTask: true}
 			}
@@ -358,6 +454,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		}
 		// /me/order 返回 ID 列表,也不支持按 planCode 筛选,不能据此猜测本次订单。
 		if checkoutUncertain(err) {
+			_ = state.DB.MarkQueueOrder(*item, "uncertain")
 			recordFailureStatus(state, item, errMsg, "uncertain")
 			state.Logger.Warn("checkout 结果未能确认,暂停任务等待人工确认(防重复下单)", "purchase")
 			notify.Broadcast(state, fmt.Sprintf(
@@ -366,6 +463,10 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 					"- 有:等付款即可,任务不需要恢复\n"+
 					"- 没有:在队列页把任务恢复运行", item.PlanCode, item.Datacenter), nil)
 			return Outcome{Attempted: false, PauseTask: true}
+		}
+		if item.Preorder && listingNotReady(err) && !retryPrepared {
+			state.Logger.Info("预订下单接口暂未接受所选配置，继续等待: "+errMsg, "purchase")
+			return Outcome{WaitingForCatalog: true, Reason: errMsg}
 		}
 		recordFailure(state, item, errMsg)
 		// checkout 这一步最要紧:补货瞬间大家都在下单,429 是常态。
@@ -377,6 +478,9 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		}
 		return outcome
 	}
+	if err := state.DB.MarkQueueOrder(*item, "ordered"); err != nil {
+		state.Logger.Error("订单已创建，但总量登记未更新: "+err.Error(), "purchase")
+	}
 	tl.mark("下单")
 	recordTiming(timingKey, tl, "ordered")
 
@@ -384,7 +488,11 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 
 	// checkout 已返回订单 ID,cart 已成功转 order,标记成功阻止 defer 删除
 	// 立刻记成功 —— 价格和过期时间空着,后台异步补
-	recordSuccess(state, item, orderID, orderURL, "", nil, couponWarning)
+	orderedItem := *item
+	if item.Preorder {
+		orderedItem.Options = append([]string(nil), cart.options...)
+	}
+	recordSuccess(state, &orderedItem, orderID, orderURL, "", nil, couponWarning)
 	recordTimingToHistory(state, item.ID, tl)
 	state.Logger.Info("[耗时] "+item.PlanCode+"@"+item.Datacenter+" 抢购成功 "+tl.String(), "purchase")
 
@@ -400,7 +508,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	// 以前被 TG 配置判断包住:Webhook-only 用户收不到"抢到了但没付款",
 	// 订单逾期作废 —— 这是整条链路里最不能丢的一条消息(issue #2)。
 	acc, _ := state.FindAccount(item.AccountID)
-	message := BuildOrderSuccessMessage(item, orderID, ovh.ManagerOrderURL(acc.Endpoint, orderID))
+	message := BuildOrderSuccessMessage(&orderedItem, orderID, ovh.ManagerOrderURL(acc.Endpoint, orderID))
 	if couponWarning != "" {
 		message += "\n\n⚠️ " + couponWarning
 	}
@@ -587,6 +695,24 @@ func preorderFQNCoversOptions(fqn string, opts []string) bool {
 		}
 	}
 	return true
+}
+
+func preorderConfigurationOptions(fqn string, stock, order []string) []string {
+	options := append([]string(nil), order...)
+	parts := strings.Split(fqn, ".")
+	for _, part := range parts[1:] {
+		covered := false
+		for _, wanted := range stock {
+			if strings.EqualFold(part, wanted) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			options = append(options, part)
+		}
+	}
+	return catalog.OrderOptions(options)
 }
 
 func extract(v interface{}) *float64 {

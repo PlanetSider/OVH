@@ -182,8 +182,60 @@ test("stock-only Eco models become searchable prereleases without replacing list
   assert.deepEqual(mergeStockPlans([listed]), [listed]);
 });
 
+test("all 12 API prerelease models expose every stock configuration without CPU or prices", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const stock = JSON.parse(await readFile(new URL("../../server/internal/purchase/testdata/preorder-stock.json", import.meta.url), "utf8"));
+  const { matchesServerSearch } = await server.ssrLoadModule("/src/lib/stock-plans.ts");
+  const { preorderVariantCoversAll } = await server.ssrLoadModule("/src/lib/preorder-options.ts");
+  const models = mergeStockPlans([], stock);
+  assert.equal(models.length, 12);
+  assert.equal(stock.length, 56);
+  for (const row of stock) {
+    const plan = models.find((model) => model.planCode === row.planCode);
+    assert.equal(plan.prerelease, true);
+    assert.equal(plan.cpu, "—");
+    assert.ok(plan.availableOptions.some((option) => option.value === row.memory));
+    assert.ok(plan.availableOptions.some((option) => option.value === row.storage));
+    assert.equal(preorderVariantCoversAll(row.fqn, [row.memory, row.storage]), true);
+  }
+  for (const [alias, code] of [["KS-LE-1", "27skle01-v1"], ["SYS-LE-2", "27sysle02-v1"], ["SYS-STOR-LE-1", "27sysstorle01-v1"], ["RISE-LE-3", "27risele03-v1"]]) {
+    assert.equal(models.find((model) => model.planCode === code).name, alias);
+    assert.ok(models.some((model) => model.planCode === code && matchesServerSearch(model, alias)));
+    assert.ok(models.some((model) => model.planCode === code && matchesServerSearch(model, alias.toLowerCase().replaceAll("-", " "))));
+  }
+});
 
-test("coupon is trimmed and sent to every datacenter and quantity task", async () => {
+test("CPU and price publication retain preorder intent while exact RAM and disks stay unchanged", async () => {
+  const { preorderOptions, retainPreorderPlan, preorderVariantCoversAll } = await server.ssrLoadModule("/src/lib/preorder-options.ts");
+  const plan = "27skle03-v1";
+  let saved = retainPreorderPlan("", plan, true);
+  saved = retainPreorderPlan(saved, plan, false);
+  assert.equal(saved, plan, "publishing CPU/pricing must not turn this into an ordinary order");
+  assert.equal(retainPreorderPlan(saved, "27skle04-v1", false), "");
+  const options = ["ram-32g-ddr4-ecc-2666", "hybridsoftraid-2x8000sa-2x480ssd"];
+  assert.deepEqual(preorderOptions(["CPU-unpublished", ...options, "fixed-cpu-old"], ["fixed-cpu-old"]), options);
+  const fqn = `${plan}.${options.join(".")}`;
+  assert.equal(preorderVariantCoversAll(fqn, options), true);
+  assert.equal(preorderVariantCoversAll(fqn, ["ram-32g-ddr4-ecc-2400", options[1]]), false);
+  assert.equal(preorderVariantCoversAll(fqn, [options[0], "softraid-2x480ssd"]), false);
+});
+
+test("preorder option labels retain DDR, ECC, frequency and every disk group", async () => {
+  const { describeOptionCode } = await server.ssrLoadModule("/src/lib/option-groups.ts");
+  assert.equal(describeOptionCode("ram-16g-ddr3-noecc-1333"), "16 GB · DDR3 · Non-ECC · 1333 MHz");
+  assert.equal(describeOptionCode("ram-32g-ddr4-ecc-2666"), "32 GB · DDR4 · ECC · 2666 MHz");
+  for (const [code, first, second] of [
+    ["hybridsoftraid-2x8000sa-2x480ssd", "2× 8TB HDD", "2× 480GB SSD"],
+    ["hybridsoftraid-4x12000sa-1x512nvme", "4× 12TB HDD", "1× 512GB NVMe"],
+    ["softraid-2x480ssd-2x8000sa-27skle03-v1", "2× 480GB SSD", "2× 8TB HDD"],
+  ]) {
+    const label = describeOptionCode(code);
+    assert.ok(label.includes(first) && label.includes(second), label);
+  }
+});
+
+
+test("coupon and quantity scope are sent in one atomic queue request", async () => {
   const { useCreateQueueItem } = await server.ssrLoadModule("/src/hooks/use-queue.ts");
   const { api } = await server.ssrLoadModule("/src/lib/api.ts");
   const client = new QueryClient();
@@ -192,15 +244,18 @@ test("coupon is trimmed and sent to every datacenter and quantity task", async (
   api.defaults.adapter = async (config) => {
     assert.equal(config.url, "/queue");
     bodies.push(JSON.parse(config.data));
-    return { data: {}, status: 200, statusText: "OK", headers: {}, config };
+    return { data: { count: JSON.parse(config.data).datacenters.length * JSON.parse(config.data).quantity }, status: 200, statusText: "OK", headers: {}, config };
   };
   let mutation;
   function Probe() { mutation = useCreateQueueItem(); return null; }
   try {
     renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(Probe)));
-    const result = await mutation.mutateAsync({ account_id: "eu", planCode: "24sk202", datacenters: ["gra", "rbx"], quantity: 2, options: ["ram-64g"], preorder: true, coupon: " Save10 " });
+    const result = await mutation.mutateAsync({ account_id: "eu", planCode: "24sk202", datacenters: ["gra", "rbx"], quantity: 2, options: ["ram-64g"], preorder: true, purchaseMode: "total", coupon: " Save10 " });
     assert.equal(result.success, 4);
-    assert.deepEqual(bodies.map((b) => b.datacenter), ["gra", "gra", "rbx", "rbx"]);
+    assert.equal(bodies.length, 1);
+    assert.deepEqual(bodies[0].datacenters, ["gra", "rbx"]);
+    assert.equal(bodies[0].quantity, 2);
+    assert.equal(bodies[0].purchaseMode, "total");
     for (const body of bodies) {
       assert.equal(body.coupon, "Save10");
       assert.equal(body.autoPay, false);
@@ -245,7 +300,7 @@ test("task edits update one queue item and monitor edits retain exact empty conf
   function Probe() { queue = useUpdateQueueItem(); monitor = useUpdateMonitorSubscription(); pause = usePauseMonitorSubscription(); return null; }
   try {
     renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(Probe)));
-    await queue.mutateAsync({ id: "task", datacenter: "rbx", options: ["ram-64g", "custom-addon"], retryInterval: 17, autoPay: false, coupon: "Save10" });
+    await queue.mutateAsync({ id: "task", datacenter: "rbx", options: ["ram-64g", "custom-addon"], retryInterval: 17, autoPay: false, coupon: "Save10", duration: "P12M" });
     await monitor.mutateAsync({ planCode: "plan", optionsKey: "", notifyAvailable: false, options: ["ram-32g"] });
     await pause.mutateAsync({ planCode: "plan", optionsKey: "", paused: true });
     assert.equal(calls.length, 3);
@@ -902,4 +957,40 @@ test("purchase period field labels and unsupported states work in both languages
     assert.ok(html.includes(i18n.t("orderDuration.unsupported")));
     assert.ok(!html.includes("orderDuration."));
   }
+});
+
+
+test("presale tasks require explicit RAM and complete disks, and scope labels work in both languages", async () => {
+  const { hasPreorderHardware } = await server.ssrLoadModule("/src/lib/preorder-options.ts");
+  const { OrderPurchaseScope } = await server.ssrLoadModule("/src/components/queue/OrderPurchaseScope.tsx");
+  const { default: i18n } = await server.ssrLoadModule("/src/i18n/index.ts");
+  assert.equal(hasPreorderHardware([]), false);
+  assert.equal(hasPreorderHardware(["ram-32g-ddr4-ecc-2400"]), false);
+  assert.equal(hasPreorderHardware(["ram-32g-ddr4-ecc-2400", "hybridsoftraid-2x8000sa-2x480ssd"]), true);
+  const original = i18n.language;
+  try {
+    for (const lang of ["zh", "en"]) {
+      await i18n.changeLanguage(lang);
+      const html = renderToStaticMarkup(createElement(OrderPurchaseScope, { id: "test-scope", value: "total", onChange() {} }));
+      assert.match(html, /for="test-scope"/);
+      assert.match(html, lang === "zh" ? /所选机房合计/ : /Total across selected datacenters/);
+      assert.doesNotMatch(html, /queue\.(scope|purchase)/);
+      for (const key of ["groupComplete", "groupUncertain", "phase.waitingQuote", "phase.waitingOptions", "phase.waitingQuota"]) assert.notEqual(i18n.t(`queue.${key}`), `queue.${key}`);
+    }
+  } finally { await i18n.changeLanguage(original); }
+});
+
+
+test("presale preparation timing phases are translated in tooltips", async () => {
+  const { TimingChip } = await server.ssrLoadModule("/src/components/common/TimingChip.tsx");
+  const { default: i18n } = await server.ssrLoadModule("/src/i18n/index.ts");
+  const original = i18n.language;
+  try {
+    for (const lang of ["zh", "en"]) {
+      await i18n.changeLanguage(lang);
+      const html = renderToStaticMarkup(createElement(TimingChip, { totalMs: 3, phases: [{ name: "复用已核验配置", ms: 2 }] }));
+      assert.match(html, lang === "zh" ? /复用已核验配置/ : /Reuse verified configuration/);
+      if (lang === "en") assert.doesNotMatch(html, /复用已核验配置/);
+    }
+  } finally { await i18n.changeLanguage(original); }
 });

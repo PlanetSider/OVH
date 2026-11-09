@@ -22,6 +22,27 @@ type cartSession struct {
 	accountID    string
 	account      types.OVHAccount
 	cart         *preparedCart
+	empty        *emptyCart
+	partial      *partialCart
+	sale         saleSnapshot
+}
+
+type partialCart struct {
+	result                      map[string]interface{}
+	client                      *ovhsdk.Client
+	intent, fqn, duration, mode string
+	itemID                      int64
+	options                     []string
+	modes                       map[string]string
+	expires                     time.Time
+}
+
+// Retained only after OVH confirms the rejected base-item request left no items.
+type emptyCart struct {
+	result  map[string]interface{}
+	client  *ovhsdk.Client
+	intent  string
+	expires time.Time
 }
 
 type preparedCart struct {
@@ -31,6 +52,10 @@ type preparedCart struct {
 	call                               *ovh.PreparedCall
 	quote                              *price.PriceInfo
 	options                            []string
+	modes                              map[string]string
+	stockOptions                       []string
+	orderOptions                       []string
+	intent                             string
 	duration                           string
 	id, fqn, subsidiary, couponWarning string
 	expires                            time.Time
@@ -61,10 +86,35 @@ func (s *cartSession) clientFor(state *app.State, account string) (*ovhsdk.Clien
 
 // discard 只清理尚未发送 checkout 的购物车;发送结果不确定的车已从 session 脱离。
 func (s *cartSession) discard() {
+	s.sale = saleSnapshot{}
+	if s.partial != nil {
+		id, _ := s.partial.result["cartId"].(string)
+		(&preparedCart{id: id, client: s.partial.client}).cleanup()
+		s.partial = nil
+	}
 	if s.cart != nil {
 		s.cart.cleanup()
 		s.cart = nil
 	}
+	if s.empty != nil {
+		id, _ := s.empty.result["cartId"].(string)
+		(&preparedCart{id: id, client: s.empty.client}).cleanup()
+		s.empty = nil
+	}
+}
+
+func cartExpires(raw interface{}) time.Time {
+	now := time.Now()
+	if value, ok := raw.(string); ok {
+		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+			expires := parsed.Add(-time.Minute)
+			if cap := now.Add(30 * time.Minute); expires.After(cap) {
+				expires = cap
+			}
+			return expires
+		}
+	}
+	return now.Add(5 * time.Minute)
 }
 
 // cleanup 有界清理废弃准备;不沿用用户已取消的 context,也不无限阻塞任务退出。
