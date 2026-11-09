@@ -321,7 +321,7 @@ test("webhook tests cache actual delivery status on success and rejection withou
   const { AxiosError } = await import("axios");
   const client = new QueryClient();
   const adapter = api.defaults.adapter;
-  const key = ["notify", "channels", true];
+  const key = ["notify", "channels", false];
   let mutation, requestCount = 0, reject = false;
   function Probe() { mutation = useTestNotification(); return null; }
   api.defaults.adapter = async (config) => {
