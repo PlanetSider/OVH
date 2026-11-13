@@ -339,9 +339,12 @@ type QueueItem struct {
 	// (checkout 的 autoPayWithPreferredPaymentMethod,schema 描述:
 	// "order will be automatically paid with preferred payment method")。
 	// 默认 false:自动扣钱必须是用户显式打开的开关,不能是隐含行为。
-	AutoPay            bool   `json:"autoPay,omitempty"`
-	Coupon             string `json:"coupon,omitempty"`
-	Preorder           bool   `json:"preorder,omitempty"` // 本地预订:等账户销售目录上架后再尝试下单
+	AutoPay  bool   `json:"autoPay,omitempty"`
+	Coupon   string `json:"coupon,omitempty"`
+	Preorder bool   `json:"preorder,omitempty"` // 本地预订:等账户销售目录上架后再尝试下单
+	// PreorderWaitStock 预售触发方式:false=开售即下(报价开放即结账,按官方排期交付);
+	// true=有货再下(报价开放后还要等库存接口在目标机房出现可下单状态)。仅 Preorder 时有效。
+	PreorderWaitStock  bool   `json:"preorderWaitStock,omitempty"`
 	ConfigSniperTaskID string `json:"configSniperTaskId,omitempty"`
 	OrderGroup         string `json:"orderGroup,omitempty"`
 	GroupLimit         int    `json:"groupLimit,omitempty"`
@@ -383,6 +386,13 @@ type PurchaseHistoryEntry struct {
 	// 是 OVH 的库存接口慢、还是自己这台机器建购物车慢、还是最后 checkout 排队了。
 	Timing  []PhaseTiming `json:"timing,omitempty"`
 	TotalMs int64         `json:"totalMs,omitempty"`
+	// DetectionToWriteUs 发现可下单库存/报价 → 结账请求写出的耗时(微秒),只在确实写出时记录
+	DetectionToWriteUs int64 `json:"detectionToWriteUs,omitempty"`
+	// Prewarmed 结账时购物车已预先备好;ConnectionReused 结账复用了已建立的连接
+	Prewarmed        bool `json:"prewarmed,omitempty"`
+	ConnectionReused bool `json:"connectionReused,omitempty"`
+	// WaitMs 从创建任务到抢到订单经过的时间(毫秒)
+	WaitMs int64 `json:"waitMs,omitempty"`
 	// OrderStatus OVH 侧的订单状态(billing.order.OrderStatusEnum):
 	// notPaid / checking / delivering / delivered / cancelled / cancelling /
 	// documentsRequested / unknown。来自 GET /me/order/{orderId}/status,
@@ -427,6 +437,8 @@ type ServerPlan struct {
 	Datacenters      []Datacenter   `json:"datacenters"`
 	DefaultOptions   []ServerOption `json:"defaultOptions"`
 	AvailableOptions []ServerOption `json:"availableOptions"`
+	// StockStale 本次刷新没能读到该型号的库存;机房列表沿用上一份缓存(没有缓存时为空)
+	StockStale bool `json:"stockStale,omitempty"`
 }
 
 // SubscriptionHistoryEntry 监控订阅的历史记录条目

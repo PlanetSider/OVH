@@ -93,8 +93,22 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("queue", "preorder", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := db.addColumnIfMissing("queue", "preorder_wait_stock", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("queue", "coupon", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
+	}
+	// 抢购耗时:发现库存→结账写出(微秒)、是否预装/复用连接、从建任务到抢到(毫秒)
+	for _, c := range [][2]string{
+		{"detection_to_write_us", "INTEGER NOT NULL DEFAULT 0"},
+		{"prewarmed", "INTEGER NOT NULL DEFAULT 0"},
+		{"connection_reused", "INTEGER NOT NULL DEFAULT 0"},
+		{"wait_ms", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := db.addColumnIfMissing("history", c[0], c[1]); err != nil {
+			return err
+		}
 	}
 	if err := db.addColumnIfMissing("history", "coupon_warning", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err

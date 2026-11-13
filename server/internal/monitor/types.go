@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"fmt"
+	"github.com/ovh-buy/server/internal/price"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,7 +12,9 @@ import (
 
 // Monitor 服务器补货监控器
 type Monitor struct {
-	state *app.State
+	// priceFn 询价实现;nil 时在进程内调用 price.GetInternalCached。仅测试注入。
+	priceFn func(accountID, planCode, datacenter string, options []string, duration string) price.Result
+	state   *app.State
 
 	subsMu        sync.Mutex
 	subscriptions []*Subscription
@@ -403,6 +406,7 @@ func (m *Monitor) SetCheckInterval(v int) int {
 	m.subsMu.Lock()
 	m.checkInterval = v
 	m.subsMu.Unlock()
+	m.state.MonitorIntervalSeconds.Store(int64(v))
 	m.state.Logger.Info(fmt.Sprintf("监控检查间隔已设置为 %d 秒", v), "monitor")
 	return v
 }

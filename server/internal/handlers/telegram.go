@@ -164,6 +164,27 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 			return
 		}
 	}
+	switch action {
+	case "qt":
+		handleTaskCallback(state, cb, callbackObj, chatID, int64(messageID))
+		u.JSON(http.StatusOK, gin.H{"ok": true, "handled": "queue_task"})
+		return
+	case "m":
+		handleMenuCallback(state, mon, cb, callbackObj, chatID, int64(messageID))
+		u.JSON(http.StatusOK, gin.H{"ok": true, "handled": "menu"})
+		return
+	case "sx":
+		handleActionCallback(state, mon, cb, callbackObj, chatID, int64(messageID))
+		u.JSON(http.StatusOK, gin.H{"ok": true, "handled": "action"})
+		return
+	case "qa":
+		answer := pauseAllText(state)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "", false)
+		text, kb := menuPage(state, mon, "queue")
+		telegram.EditMessage(state, chatID, int64(messageID), clampReply(answer+"\n\n"+text), kb)
+		u.JSON(http.StatusOK, gin.H{"ok": true, "handled": "pause_all"})
+		return
+	}
 	if action != "add_to_queue" {
 		state.Logger.Warn("未知的action: "+action, "telegram")
 		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Unknown action: " + action})

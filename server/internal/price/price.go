@@ -2,8 +2,10 @@ package price
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/ovh-buy/server/internal/orderterm"
+	"math"
 	"net/url"
 	"strings"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/ovh-buy/server/internal/numconv"
 	"github.com/ovh-buy/server/internal/ovh"
 	"github.com/ovh-buy/server/internal/types"
+	ovhsdk "github.com/ovh/go-ovh/ovh"
 	"sort"
 	"sync"
 	"time"
@@ -25,11 +28,26 @@ type Result struct {
 	Options    []string `json:"options,omitempty"`
 	// Degraded:价格算出来了,但购物车没有完全配成用户要的样子(某个非机房必填配置没设上)。
 	// 价格仍可展示,但不能拿它当"可以下单"的闸门 —— purchase.go 对同样的配置是 fail-fast 的。
-	Degraded       bool                   `json:"degraded,omitempty"`
-	DegradedReason string                 `json:"degradedReason,omitempty"`
-	Price          *PriceInfo             `json:"price"`
-	Error          string                 `json:"error,omitempty"`
-	Raw            map[string]interface{} `json:"-"`
+	Degraded       bool       `json:"degraded,omitempty"`
+	DegradedReason string     `json:"degradedReason,omitempty"`
+	Price          *PriceInfo `json:"price"`
+	Error          string     `json:"error,omitempty"`
+	// Transient 失败来自超时、网络、429 或 5xx 等暂时性错误,不代表这套配置不能下单。
+	// 监控据此区分「没验成」与「验过、不可下单」;暂时性失败不缓存。
+	Transient bool                   `json:"transient,omitempty"`
+	Raw       map[string]interface{} `json:"-"`
+}
+
+// transientErr 超时、网络错误、408、429、5xx 视为暂时性;明确的业务 4xx 不是。
+func transientErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *ovhsdk.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == 408 || apiErr.Code == 429 || apiErr.Code >= 500
+	}
+	return true
 }
 
 type PriceInfo struct {
@@ -84,6 +102,9 @@ func GetInternalCached(state *app.State, accountID, planCode, datacenter string,
 	}
 	internalPriceCache.Unlock()
 	r := GetInternal(state, accountID, planCode, datacenter, options, duration)
+	if !r.Success && r.Transient {
+		return r // 暂时性失败不缓存,下一次检查重新询价
+	}
 	internalPriceCache.Lock()
 	// 防无限增长:超 512 条先清过期
 	if len(internalPriceCache.m) > 512 {
@@ -140,7 +161,7 @@ func GetInternal(state *app.State, accountID, planCode, datacenter string, optio
 	if err := client.Post("/order/cart", map[string]interface{}{
 		"ovhSubsidiary": subsidiary,
 	}, &cartResult); err != nil {
-		return Result{Success: false, Error: ovh.Explain(err)}
+		return Result{Success: false, Error: ovh.Explain(err), Transient: transientErr(err)}
 	}
 	cartID, _ = cartResult["cartId"].(string)
 	state.Logger.Debug("购物车创建成功，ID: "+cartID, "price")
@@ -154,7 +175,7 @@ func GetInternal(state *app.State, accountID, planCode, datacenter string, optio
 	if selectedDuration != orderterm.Default {
 		baseDuration, basePricingMode, err = orderterm.Lookup(context.Background(), client, cartID, "eco", planCode, selectedDuration)
 		if err != nil {
-			return Result{Error: err.Error()}
+			return Result{Error: err.Error(), Transient: transientErr(err) && !errors.Is(err, orderterm.ErrUnavailable)}
 		}
 	}
 	var itemResult map[string]interface{}
@@ -193,7 +214,7 @@ func GetInternal(state *app.State, accountID, planCode, datacenter string, optio
 						"美区机型带 -us / -eu / -ca 后缀，欧区和加区不带。请改用本区的 planCode，或换一个同区账户询价。",
 					planCode, subsidiary, ovh.SubsidiaryRegion(subsidiary))}
 			}
-			return Result{Success: false, Error: msg}
+			return Result{Success: false, Error: msg, Transient: transientErr(err)}
 		}
 	}
 	itemID, _ := numconv.ToInt64(itemResult["itemId"])
@@ -263,7 +284,7 @@ func GetInternal(state *app.State, accountID, planCode, datacenter string, optio
 				// 机房没设上 → 购物车停留在 OVH 默认机房,summary 出来的是"别的机房的价格"。
 				// 把它当成用户请求机房的价格返回会直接误导买不买的决策,必须硬失败。
 				state.Logger.Error(fmt.Sprintf("设置机房 %s 失败: %s，本次询价作废", cfg.value, err.Error()), "price")
-				return Result{Success: false, Error: "无法把购物车配置到指定机房:" + ovh.Explain(err)}
+				return Result{Success: false, Error: "无法把购物车配置到指定机房:" + ovh.Explain(err), Transient: transientErr(err)}
 			}
 			// os / region 是 requiredConfiguration 里的必填项,没设上时价格可能仍然算得出来,
 			// 但 purchase.go 对同样的失败是 fail-fast,所以这里标 degraded 让下单闸门拒绝放行。
@@ -293,7 +314,7 @@ func GetInternal(state *app.State, accountID, planCode, datacenter string, optio
 		q.Set("planCode", planCode)
 		if err := client.Get(fmt.Sprintf("/order/cart/%s/eco/options?%s", cartID, q.Encode()), &availableOpts); err != nil {
 			state.Logger.Error("获取 Eco 选项列表失败: "+err.Error(), "price")
-			return Result{Success: false, Error: "获取硬件选项列表失败：" + err.Error()}
+			return Result{Success: false, Error: "获取硬件选项列表失败：" + err.Error(), Transient: transientErr(err)}
 		}
 		state.Logger.Debug(fmt.Sprintf("找到 %d 个可用选项", len(availableOpts)), "price")
 		for _, wanted := range orderOptions {
@@ -328,7 +349,7 @@ func GetInternal(state *app.State, accountID, planCode, datacenter string, optio
 			}
 			if err := client.Post(fmt.Sprintf("/order/cart/%s/eco/options", cartID), optPayload, nil); err != nil {
 				state.Logger.Error(fmt.Sprintf("添加选项 %s 失败: %s", matchedPC, err.Error()), "price")
-				return Result{Success: false, Error: "添加硬件选项 " + matchedPC + " 失败：" + err.Error()}
+				return Result{Success: false, Error: "添加硬件选项 " + matchedPC + " 失败：" + err.Error(), Transient: transientErr(err)}
 			}
 			addedPlanCodes = append(addedPlanCodes, matchedPC)
 			state.Logger.Debug("成功添加选项: "+matchedPC, "price")
@@ -344,13 +365,13 @@ func GetInternal(state *app.State, accountID, planCode, datacenter string, optio
 
 	// 6. 先按购物车的 itemId 逐项核验实际周期，再从 summary 读取价格明细。
 	if err := orderterm.VerifyCart(context.Background(), client, cartID, itemID, selectedDuration); err != nil {
-		return Result{Error: err.Error()}
+		return Result{Error: err.Error(), Transient: transientErr(err) && !errors.Is(err, orderterm.ErrCartPeriod) && !errors.Is(err, orderterm.ErrCartConfiguration)}
 	}
 	// OVH 错误直接返回 success:false。
 	// 之前 Go 静默忽略会导致瞬断时 success:true 但价格全 nil，前端误以为有效价格 0
 	var cartSummary map[string]interface{}
 	if err := client.Get("/order/cart/"+cartID+"/summary", &cartSummary); err != nil {
-		return Result{Success: false, Error: ovh.Explain(err)}
+		return Result{Success: false, Error: ovh.Explain(err), Transient: transientErr(err)}
 	}
 
 	priceInfo := &PriceInfo{
@@ -427,6 +448,8 @@ func GetInternal(state *app.State, accountID, planCode, datacenter string, optio
 			}
 		}
 	}
+
+	splitRecurringAndSetup(priceInfo, cartSummary)
 
 	withTaxStr := fmt.Sprintf("%v", priceInfo.Prices["withTax"])
 	currencyStr := fmt.Sprintf("%v", priceInfo.Prices["currencyCode"])
@@ -525,4 +548,57 @@ func extractPriceField(v interface{}) (interface{}, string) {
 		return f, ""
 	}
 	return nil, ""
+}
+
+// splitRecurringAndSetup 把 summary 的总价拆成周期费与一次性安装费。
+//
+// GET /order/cart/{id}/summary 的 prices 是**首张账单的合计**:首个周期 + 安装费。
+// 以前直接把它当成「每月价格」展示,同时又单独显示安装费,安装费被算了两次
+// (例:€14.62/月 + €23.36 安装费被印成「€37.98/月」)。
+// details[] 里 detailType=INSTALLATION 的行就是安装费(不含税);各行税率相同,
+// 含税部分按不含税金额的比例拆分。withTax/withoutTax 保持为合计,供「价格有效」闸门使用。
+func splitRecurringAndSetup(info *PriceInfo, summary map[string]interface{}) {
+	withTax, okWith := numconv.ToFloat64(info.Prices["withTax"])
+	withoutTax, okWithout := numconv.ToFloat64(info.Prices["withoutTax"])
+	if !okWith || !okWithout || withoutTax <= 0 {
+		return
+	}
+	setupLines, allLines := 0.0, 0.0
+	if details, ok := summary["details"].([]interface{}); ok {
+		for _, raw := range details {
+			d, _ := raw.(map[string]interface{})
+			if d == nil {
+				continue
+			}
+			v, _ := extractPriceField(d["totalPrice"])
+			f, ok := numconv.ToFloat64(v)
+			if !ok {
+				continue
+			}
+			allLines += f
+			if d["detailType"] == "INSTALLATION" && f > 0 {
+				setupLines += f
+			}
+		}
+	}
+	if setupLines <= 0 {
+		// 没有安装费行:合计就是周期费
+		info.Prices["recurringWithTax"] = withTax
+		info.Prices["recurringWithoutTax"] = withoutTax
+		return
+	}
+	// 明细行通常不含税(税只在订单级 prices 上);若明细合计更接近含税总价,则按含税解读
+	setupExcl, setupWith := setupLines, withTax*setupLines/withoutTax
+	if math.Abs(allLines-withTax) < math.Abs(allLines-withoutTax) {
+		setupWith, setupExcl = setupLines, withoutTax*setupLines/withTax
+	}
+	if setupWith > withTax || setupExcl > withoutTax {
+		return // 数据异常时不拆,保持合计
+	}
+	recurringExcl, recurringWith := withoutTax-setupExcl, withTax-setupWith
+	round := func(v float64) float64 { return math.Round(v*100) / 100 }
+	info.Prices["recurringWithTax"] = round(recurringWith)
+	info.Prices["recurringWithoutTax"] = round(recurringExcl)
+	info.Prices["setupWithTax"] = round(setupWith)
+	info.Prices["setupWithoutTax"] = round(setupExcl)
 }

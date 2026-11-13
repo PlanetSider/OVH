@@ -580,7 +580,7 @@ func finishWatchFlow(state *app.State, mon *monitor.Monitor, f *watchFlow, quant
 		if f.PickedConfig == "" {
 			b.WriteString("，且每套配置各算一次")
 		}
-		b.WriteString("。\n抢到的订单默认不自动付款，需要你去付。\n")
+		b.WriteString("。\n抢到的订单不会自动付款，请到 OVH 订单页付款。\n")
 	} else {
 		b.WriteString("补货时：只发通知，你点按钮再下单\n")
 		if f.AccountLabel != "" {

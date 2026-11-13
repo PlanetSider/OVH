@@ -266,9 +266,10 @@ function VPSMonitorPage() {
       ) : subs.length === 0 ? (
         <Card>
           <EmptyState
-            icon={Cloud}
+            illustration="monitor"
             title={t("vpsMonitor.list.empty")}
             description={t("vpsMonitor.list.emptyDesc")}
+            action={<Button onClick={() => setOpenAdd(true)}>{t("monitor.list.emptyAdd")}</Button>}
           />
         </Card>
       ) : (
@@ -619,7 +620,7 @@ function AddVPSDialog({
       setQuantity(editing.quantity && editing.quantity > 0 ? editing.quantity : 1);
       setOs(editing.os || "");
       setAutoPay(!!editing.autoPay);
-        setDuration(editing.duration || "P1M");
+      setDuration(editing.duration || "P1M");
     } else {
       reset();
     }
