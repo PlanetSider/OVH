@@ -77,7 +77,11 @@ export const commonLayerZh = {
     },
     monitor: {
       pausedWithQueue: "监控已暂停,同时暂停 {{count}} 个关联抢购任务",
-      resumedOnly: "监控已恢复；已暂停的抢购任务需到队列手动恢复",
+      resumedNoTasks: "监控已恢复",
+      resumeTasks: "同时恢复 {{count}} 个抢购任务",
+      tasksResumed: "已恢复 {{count}} 个抢购任务",
+      tasksResumedPartial: "已恢复 {{ok}}/{{total}} 个抢购任务,其余请到队列查看",
+      resumedOnly: "监控已恢复；被它暂停的抢购任务仍保持暂停",
       saved: "订阅已保存",
       saveFailed: "保存失败",
       updated: "订阅已更新",
@@ -258,6 +262,12 @@ export const commonLayerZh = {
       latestTitle: "有新版本 v{{version}}，点击查看更新说明",
       updateNow: "立即更新",
       upToDate: "已是最新 v{{version}}",
+    },
+    autoPay: {
+      checking: "正在检查该账户的默认支付方式…",
+      usable: "默认支付方式可用：{{label}}，抢到后将自动扣款",
+      unusable: "自动付款不会生效：{{reason}}。请先在 OVH 设置有效的默认支付方式，否则订单需手动付款",
+      unknown: "无法确认默认支付方式（{{reason}}），抢到后请留意是否已扣款",
     },
     timing: {
       dispatch: "探测→写出 {{value}}",

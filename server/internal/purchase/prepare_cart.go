@@ -535,8 +535,9 @@ func listingNotReady(err error) bool {
 	return errors.As(err, &apiErr) && (apiErr.Code == 400 || apiErr.Code == 404 || apiErr.Code == 409)
 }
 
-// checkoutPayload 结账请求体。autoPay 为 true 时让 OVH 用账户默认支付方式自动付款;
-// 不发送 waiveRetractationPeriod,保留 14 天撤回权。
+// checkoutPayload 结账请求体。autoPayWithPreferredPaymentMethod 只跟随任务上用户显式打开的
+// 自动付款开关(默认关),不能写死;也不发送 waiveRetractationPeriod,保留 14 天撤回权。
+// 预装购物车的键包含该开关,开关变化会丢弃旧的预构造请求,不会用旧的付款方式结账。
 func checkoutPayload(autoPay bool) map[string]interface{} {
 	return map[string]interface{}{
 		"autoPayWithPreferredPaymentMethod": autoPay,

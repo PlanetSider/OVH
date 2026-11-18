@@ -56,6 +56,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求体格式错误: " + err.Error()})
 			return
 		}
+
 		// 先取当前值作为默认,再用 body 里给了的字段覆盖
 		cur := mon.SubscriptionConfig(planCode, selector...)
 		datacenters := cur.Datacenters
@@ -178,6 +179,7 @@ func UpdateVPSSubscription(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求体格式错误: " + err.Error()})
 			return
 		}
+
 		// 先在锁里取一份快照,校验和探测都在锁外做 —— 探测要发 HTTP,
 		// 拿着 VPSSubsMu 去等网络会把整个监控循环卡住
 		state.VPSSubsMu.Lock()

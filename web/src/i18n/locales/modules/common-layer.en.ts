@@ -83,7 +83,11 @@ const pack: CommonLayerPack = {
     },
     monitor: {
       pausedWithQueue: "Monitoring paused; {{count}} matching purchase tasks paused",
-      resumedOnly: "Monitoring resumed. Resume paused purchase tasks manually in the queue.",
+      resumedNoTasks: "Monitor resumed",
+      resumeTasks: "Also resume {{count}} sniping tasks",
+      tasksResumed: "Resumed {{count}} sniping tasks",
+      tasksResumedPartial: "Resumed {{ok}}/{{total}} sniping tasks; check the queue for the rest",
+      resumedOnly: "Monitoring resumed. Tasks it paused are still paused.",
       saved: "Subscription saved",
       saveFailed: "Failed to save",
       updated: "Subscription updated",
@@ -272,6 +276,12 @@ const pack: CommonLayerPack = {
       latestTitle: "New version v{{version}} available — click to view the release notes",
       updateNow: "Update now",
       upToDate: "Up to date v{{version}}",
+    },
+    autoPay: {
+      checking: "Checking this account's default payment method…",
+      usable: "Default payment method ready: {{label}}. Orders will be charged automatically",
+      unusable: "Auto-pay will not work: {{reason}}. Set a valid default payment method in OVH, or orders must be paid manually",
+      unknown: "Could not check the default payment method ({{reason}}); confirm the charge after ordering",
     },
     timing: {
       dispatch: "Detect→send {{value}}",

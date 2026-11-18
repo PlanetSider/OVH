@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -278,8 +279,12 @@ test("successful history keeps coupon fallback visible in desktop and mobile vie
   client.setQueryData(["history"], [{ id: "order", accountId: "eu", planCode: "24sk202", datacenter: "gra", status: "success", purchaseTime: "2026-10-23T00:00:00Z", couponWarning: warning }]);
   client.setQueryData(["accounts", "list"], []);
   try {
+    // 现在按容器宽度只渲染表格或紧凑列表其中一种,渲染出的那一种必须带着提示
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(HistoryRoute.options.component)));
-    assert.equal(html.split(warning).length - 1, 2);
+    assert.equal(html.split(warning).length - 1, 1);
+    // 表格行和紧凑行两种视图都保留优惠码提示
+    const source = readFileSync(new URL("../src/routes/history.tsx", import.meta.url), "utf8");
+    assert.equal(source.split("{item.couponWarning && ").length - 1, 2);
   } finally {
     client.clear();
   }

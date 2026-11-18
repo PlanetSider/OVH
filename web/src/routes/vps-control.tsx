@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useConfirm } from "@/components/common/ConfirmDialog";
 import { useTranslation, Trans } from "react-i18next";
 import { terminationLabel } from "@/hooks/use-server-control";
 import { useEffect, useState } from "react";
@@ -93,6 +94,8 @@ function VpsControlPage() {
   // 所以不单独报错 —— 真在这里加提示,反而会盖过同页更要命的那几处失败。
   const aliases = useServerAliases();
   const setAlias = useSetServerAlias();
+  // 不再用左侧列表(太占地方):多台时用顶部下拉切换,只有一台时连选择卡也不出现
+  const multi = vpsList.length > 1;
 
   return (
     <div className="space-y-3 sm:space-y-4">
@@ -114,7 +117,8 @@ function VpsControlPage() {
         }
       />
 
-      {/* 账户 + VPS 选择 */}
+      {/* 账户 + VPS 选择:多台需要切换、或需要报错时才出现 */}
+      {(multi || accountsQ.isError || q.isError) && (
       <Card>
         <CardContent className="p-4 flex flex-wrap items-center gap-3">
           {/* 当前账户不在这里重复显示 —— 顶栏(手机)/侧栏(桌面)的切换器是全站唯一的账户显示位。
@@ -133,7 +137,8 @@ function VpsControlPage() {
               </button>
             </div>
           )}
-          <div className="flex items-center gap-2 flex-1 min-w-[280px]">
+          {(multi || q.isError) && (<>
+          <div className="flex items-center gap-2 flex-1 min-w-0 basis-[260px]">
             <span className="text-[12px] text-muted-foreground">VPS</span>
             <Select value={selectedName || ""} onValueChange={setSelectedName}>
               <SelectTrigger className="h-9 w-full max-w-md">
@@ -178,8 +183,10 @@ function VpsControlPage() {
             )}
             {q.isFetching && t("vpsList.count.syncing")}
           </div>
+          </>)}
         </CardContent>
       </Card>
+      )}
 
       {/* 内容区。
           列表没问到 ≠ 该账户名下没有 VPS。以前两种情况共用「该账户下暂无 VPS」+「可以去 OVH 官网下单,
@@ -203,23 +210,25 @@ function VpsControlPage() {
           </CardContent>
         </Card>
       ) : selected ? (
-        <>
-          {q.isError && (
-            <LoadFailedBanner
-              title={t("vpsList.list.failedBanner")}
-              error={q.error}
-              onRetry={() => q.refetch()}
+        <div>
+          <div className="min-w-0 space-y-3 sm:space-y-4">
+            {q.isError && (
+              <LoadFailedBanner
+                title={t("vpsList.list.failedBanner")}
+                error={q.error}
+                onRetry={() => q.refetch()}
+              />
+            )}
+            <VpsDetail
+              key={`${activeAccount}:${selected.serviceName}`}
+              server={selected}
+              aliases={aliases}
+              onSetAlias={setAlias}
+              isUS={isUsEndpoint(activeEndpoint)}
+              region={regionLabel(endpointRegion(activeEndpoint))}
             />
-          )}
-          <VpsDetail
-            key={`${activeAccount}:${selected.serviceName}`}
-            server={selected}
-            aliases={aliases}
-            onSetAlias={setAlias}
-            isUS={isUsEndpoint(activeEndpoint)}
-            region={regionLabel(endpointRegion(activeEndpoint))}
-          />
-        </>
+          </div>
+        </div>
       ) : q.isPending ? (
         <Skeleton className="h-96 rounded-2xl" />
       ) : null}
@@ -312,6 +321,7 @@ function VpsDetail({
   const console_ = useVpsConsoleUrl(server.serviceName);
   const terminate = useTerminateVps();
   const confirmTerm = useConfirmTerminateVps();
+  const [confirmAsk, confirmDialog] = useConfirm();
 
   const [reinstallOpen, setReinstallOpen] = useState(false);
   const [stopOpen, setStopOpen] = useState(false);
@@ -372,7 +382,8 @@ function VpsDetail({
     }
   };
   const handleReboot = async () => {
-    if (!confirm(t("vpsList.power.confirmReboot"))) return;
+    const ok = await confirmAsk({ title: t("vpsList.power.confirmReboot"), tone: "danger", confirmText: t("vpsList.power.rebootAction") });
+    if (!ok) return;
     try {
       await reboot.mutateAsync();
       toast.success(t("vpsList.toast.rebootSubmitted"));
@@ -426,6 +437,7 @@ function VpsDetail({
 
   return (
     <>
+      {confirmDialog}
       <Tabs defaultValue="overview">
         {/* 顶部信息条 + 工具按钮 */}
         <div className="flex items-center justify-between gap-3 flex-wrap">

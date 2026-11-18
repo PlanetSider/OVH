@@ -33,6 +33,13 @@ export const watchPagesZh = {
       empty: "还没有监控订阅",
       emptyDesc: "订阅型号和机房后，补货会第一时间通知你，也可以设置自动下单。",
       emptyAdd: "添加订阅",
+      title: "订阅",
+      search: "搜索型号 / 名称 / 机房",
+      filterAll: "全部",
+      filterActive: "监控中",
+      filterPaused: "已暂停",
+      noMatch: "没有符合条件的订阅",
+      trend: "库存变化",
     },
     remove: {
       title: "取消订阅",
@@ -131,6 +138,7 @@ export const watchPagesZh = {
   },
 
   vpsMonitor: {
+    heatTitle: "库存变化热力 7×24",
     title: "VPS 补货通知",
     description: "选择 VPS 型号，自动监控所有数据中心的库存变化",
     addAction: "添加订阅",
@@ -158,6 +166,13 @@ export const watchPagesZh = {
       failed: "VPS 订阅列表读取失败",
       empty: "暂无 VPS 订阅",
       emptyDesc: "选择 VPS 型号和机房，补货时第一时间通知你。",
+      title: "订阅",
+      search: "搜索型号 / 名称 / 机房",
+      filterAll: "全部",
+      filterActive: "监控中",
+      filterPaused: "已暂停",
+      noMatch: "没有符合条件的订阅",
+      trend: "库存变化",
     },
     remove: {
       title: "取消订阅",
@@ -170,6 +185,7 @@ export const watchPagesZh = {
       confirm: "确认清空",
     },
     row: {
+      notifyOnly: "仅通知",
       retired: "已停售",
       retiredTitle: "OVH 已经不卖这个型号了，这条订阅永远不会有货",
       autoOrder: "自动下单",
@@ -286,6 +302,7 @@ export const watchPagesZh = {
       empty: "暂无服务器",
       emptyDesc: "您的 OVH 账户下还没有独立服务器，或 API 没拿到数据",
     },
+    sidebar: { title: "服务器", search: "搜索名称 / IP / 机房", noMatch: "没有匹配的服务器", rename: "设置别名" },
     selector: {
       placeholder: "选择服务器",
       title: "左键打开列表;右键给当前服务器设别名",
@@ -308,6 +325,20 @@ export const watchPagesZh = {
       power: "电源",
       maintenance: "维护",
       advanced: "高级",
+    },
+    hero: {
+      switch: "切换服务器(共 {{n}} 台)",
+      copyIp: "复制 IP",
+      copied: "已复制 IP",
+      stateOk: "运行正常",
+      os: "系统",
+      monitor: "OVH 监控",
+      on: "已开启",
+      off: "已关闭",
+      loading: "读取中…",
+      monitorUnknown: "状态未知 · 重试",
+      daysLeft: "剩 {{n}} 天",
+      expired: "已到期",
     },
     pill: {
       retractable: "可撤单",
@@ -354,6 +385,7 @@ export const watchPagesZh = {
     },
     renewalLabel: "续费",
     accountsFailed: "账户读取失败，本页按欧区渲染，区域相关功能可能不对",
+    sidebar: { title: "VPS", search: "搜索名称 / 服务名", noMatch: "没有匹配的 VPS" },
     select: {
       placeholderFailed: "列表读取失败",
       loading: "加载中…",
@@ -418,6 +450,7 @@ export const watchPagesZh = {
       engagement: "合同期",
       tasks: "任务历史",
       confirmReboot: "确认重启 VPS?",
+      rebootAction: "重启",
     },
     toast: {
       startSubmitted: "启动任务已提交",

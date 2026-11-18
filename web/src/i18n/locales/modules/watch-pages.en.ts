@@ -36,6 +36,13 @@ const pack: WatchPagesPack = {
       empty: "No subscriptions",
       emptyDesc: "Subscribe to models and datacenters to get restock alerts instantly, with optional auto-ordering.",
       emptyAdd: "Add subscription",
+      title: "Subscriptions",
+      search: "Search model / name / datacenter",
+      filterAll: "All",
+      filterActive: "Watching",
+      filterPaused: "Paused",
+      noMatch: "No subscriptions match",
+      trend: "Stock changes",
     },
     remove: {
       title: "Unsubscribe",
@@ -135,6 +142,7 @@ const pack: WatchPagesPack = {
   },
 
   vpsMonitor: {
+    heatTitle: "Stock-change heat 7×24",
     title: "VPS Restock Alerts",
     description: "Pick VPS models and automatically watch stock changes across all datacenters",
     addAction: "Add subscription",
@@ -163,6 +171,13 @@ const pack: WatchPagesPack = {
       failed: "Failed to load the VPS subscription list",
       empty: "No VPS subscriptions",
       emptyDesc: "Pick a VPS model and datacenter to get notified the moment it restocks.",
+      title: "Subscriptions",
+      search: "Search model / name / datacenter",
+      filterAll: "All",
+      filterActive: "Watching",
+      filterPaused: "Paused",
+      noMatch: "No subscriptions match",
+      trend: "Stock changes",
     },
     remove: {
       title: "Unsubscribe",
@@ -175,6 +190,7 @@ const pack: WatchPagesPack = {
       confirm: "Clear",
     },
     row: {
+      notifyOnly: "Notify only",
       retired: "Retired",
       retiredTitle: "OVH no longer sells this model; this subscription will never see stock",
       autoOrder: "Auto-order",
@@ -291,6 +307,7 @@ const pack: WatchPagesPack = {
       empty: "No servers",
       emptyDesc: "Your OVH account has no dedicated servers yet, or the API returned no data",
     },
+    sidebar: { title: "Servers", search: "Search name / IP / datacenter", noMatch: "No matching servers", rename: "Set alias" },
     selector: {
       placeholder: "Select a server",
       title: "Left-click to open the list; right-click to rename the current server",
@@ -313,6 +330,20 @@ const pack: WatchPagesPack = {
       power: "Power",
       maintenance: "Maintenance",
       advanced: "Advanced",
+    },
+    hero: {
+      switch: "Switch server ({{n}} total)",
+      copyIp: "Copy IP",
+      copied: "IP copied",
+      stateOk: "Running",
+      os: "System",
+      monitor: "OVH monitoring",
+      on: "On",
+      off: "Off",
+      loading: "Loading…",
+      monitorUnknown: "Unknown · retry",
+      daysLeft: "{{n}} days left",
+      expired: "Expired",
     },
     pill: {
       retractable: "Retractable",
@@ -360,6 +391,7 @@ const pack: WatchPagesPack = {
     },
     renewalLabel: "Renewal",
     accountsFailed: "The account failed to load; this page renders as the EU region — region-dependent features may be wrong",
+    sidebar: { title: "VPS", search: "Search name / service", noMatch: "No matching VPS" },
     select: {
       placeholderFailed: "List failed to load",
       loading: "Loading…",
@@ -424,6 +456,7 @@ const pack: WatchPagesPack = {
       engagement: "Engagement",
       tasks: "Tasks",
       confirmReboot: "Confirm rebooting this VPS?",
+      rebootAction: "Reboot",
     },
     toast: {
       startSubmitted: "Start task submitted",

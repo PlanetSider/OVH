@@ -1,10 +1,16 @@
 import { OrderPurchaseScope, type PurchaseMode } from "@/components/queue/OrderPurchaseScope";
+import { AutoPayOption } from "@/components/common/AutoPayStatus";
 import { hasPreorderHardware } from "@/lib/preorder-options";
 import { OrderDurationField, OrderDurationLabel } from "@/components/queue/OrderDurationField";
 import { preorderVariantCoversAll, preorderOptions, retainPreorderPlan } from "@/lib/preorder-options";
 import { useOrderDurations } from "@/hooks/use-order-durations";
 import { supportsDuration } from "@/lib/order-duration";
 import { QueueStatusFilter, type QueueFilter } from "@/components/queue/QueueStatusFilter";
+import { QueueTable, type QueueRowProps } from "@/components/queue/QueueTable";
+import { FacetFilter, type FacetOption } from "@/components/queue/FacetFilter";
+import { useConfirm } from "@/components/common/ConfirmDialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { OrderPrewarm, StandbyCarts } from "@/components/queue/OrderPrewarm";
 import { useOrderPrewarm } from "@/hooks/use-order-prewarm";
 import { createFileRoute, Link } from "@tanstack/react-router";
@@ -19,12 +25,18 @@ import {
   Plus,
   Pencil,
   Loader2,
+  Search,
+  RotateCw,
+  Layers,
+  List,
+  ChevronDown,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useTranslation, Trans } from "react-i18next";
 import { PageHeader } from "@/components/common/PageHeader";
-import { PearlPanel, PearlPanelHead } from "@/components/pearl/ListKit";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -159,7 +171,6 @@ function IntervalEditor({ id, value }: { id: string; value: number }) {
 function QueuePage() {
   const { t } = useTranslation();
   // 行卡密度:紧凑/舒适,按页记忆(他的 view.ts 思路)
-  const [dense, setDense] = useState(() => localStorage.getItem("ovh_queue_density") === "1");
   const queue = useQueueList();
   // 每条链路上一轮的耗时,用来回答"我到底卡在哪一步"
   const timings = usePurchaseTimings();
@@ -184,13 +195,48 @@ function QueuePage() {
   }, [createPlanCode, createOptions]);
 
   const items = queue.data || [];
-  const [filter, setFilter] = useState<QueueFilter>("all");
-  const visibleItems = items.filter((item) => filter === "all" || item.status === filter || (filter === "running" && item.status === "pending"));
+  // 默认看「运行中」:打开队列最关心的是正在抢的任务;已下单/失败记录在其它筛选里
+  const [filter, setFilter] = useState<QueueFilter>("running");
+  const [search, setSearch] = useState("");
+  const keyword = search.trim().toLowerCase();
+  // 刚在本页暂停/恢复过的任务留在当前筛选里,直到切换筛选:
+  // 否则在「运行中」点暂停,任务立刻消失,想撤回还得去「已暂停」里找。
+  const [sticky, setSticky] = useState<Set<string>>(() => new Set());
+  const keepVisible = (ids: string[]) => setSticky((prev) => new Set([...prev, ...ids]));
+  // 机房 / 账户多选筛选,与状态、搜索叠加
+  const [dcFacet, setDcFacet] = useState<Set<string>>(() => new Set());
+  const [accFacet, setAccFacet] = useState<Set<string>>(() => new Set());
+  const [view, setView] = useState<"grouped" | "flat">(() => {
+    try {
+      return localStorage.getItem("ovh-queue-view") === "flat" ? "flat" : "grouped";
+    } catch {
+      return "grouped";
+    }
+  });
+  const changeView = (v: "grouped" | "flat") => {
+    setView(v);
+    try { localStorage.setItem("ovh-queue-view", v); } catch { /* 隐私模式等读写失败时只在本次生效 */ }
+  };
+  const visibleItems = items.filter(
+    (item) =>
+      (filter === "all" || item.status === filter || (filter === "running" && item.status === "pending") || sticky.has(item.id)) &&
+      (dcFacet.size === 0 || dcFacet.has(item.datacenter.toUpperCase())) &&
+      (accFacet.size === 0 || accFacet.has(item.accountId)) &&
+      (!keyword || item.planCode.toLowerCase().includes(keyword) || item.datacenter.toLowerCase().includes(keyword)),
+  );
 
   // —— 批量操作 ——
   // 一条 /buy 或一次网页建单最多扇出 60 个任务(MAX_ORDER_FANOUT),
   // 而在这之前只能一个一个点暂停/删除。抢购结束后清理一批失败任务是高频动作,
   // 「清空」又太狠(会把还在跑的一起删掉)。
+  // 筛选项基于当前状态筛选下的任务,数量随状态变化
+  const statusScoped = items.filter((item) => filter === "all" || item.status === filter || (filter === "running" && item.status === "pending") || sticky.has(item.id));
+  const dcOptions: FacetOption[] = [...statusScoped.reduce((m, i) => m.set(i.datacenter.toUpperCase(), (m.get(i.datacenter.toUpperCase()) || 0) + 1), new Map<string, number>())]
+    .sort((a, b) => b[1] - a[1])
+    .map(([value, count]) => ({ value, count, label: <span className="font-mono">{value}</span> }));
+  const accOptions: FacetOption[] = [...statusScoped.reduce((m, i) => m.set(i.accountId, (m.get(i.accountId) || 0) + 1), new Map<string, number>())]
+    .sort((a, b) => b[1] - a[1])
+    .map(([value, count]) => ({ value, count, label: <AccountChip accountId={value} /> }));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchRunning, setBatchRunning] = useState(false);
   const [showBatchDelete, setShowBatchDelete] = useState(false);
@@ -241,120 +287,193 @@ function QueuePage() {
     queue.refetch();
   };
 
-  // 队列状态块(pending/error/空态/列表)—— 两套皮肤共用,只换外壳
-  const queueBody = (
-    <>
-      {queue.isPending ? (
-        <div className="space-y-3">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-20 rounded-2xl" />
-          ))}
-        </div>
-      ) : queue.isError ? (
-        /* 这页是"我有哪些任务在跑"的唯一真相来源。请求挂了还画「暂无任务 · 点右上角新建」,
-           用户会以为任务压根没建成,回头再建一遍 —— 同一台机器排两条队,抢到就是两笔真实订单。
-           所以失败必须自己占一支,不能跟空态共用。 */
-        <Card>
-          <LoadFailed
-            icon={ClipboardList}
-            title={t("queue.loadFailedTitle")}
-            error={queue.error}
-            onRetry={() => queue.refetch()}
-          />
-        </Card>
-      ) : visibleItems.length === 0 ? (
-        <Card>
-          <EmptyState
-            illustration={filter === "all" ? "queue" : "search"}
-            title={t(filter === "all" ? "queue.emptyTitle" : "queue.filterEmpty")}
-            description={t(filter === "all" ? "queue.emptyDesc" : "queue.filterEmptyHint")}
-            action={
-              filter === "all" ? (
-                <>
-                  <Button onClick={() => setShowCreateDialog(true)}>{t("queue.emptyCreate")}</Button>
-                  <Button variant="outline" asChild>
-                    <Link to="/servers">{t("queue.emptyBrowse")}</Link>
-                  </Button>
-                </>
-              ) : (
-                <Button variant="outline" onClick={() => setFilter("all")}>{t("queue.emptyShowAll")}</Button>
-              )
-            }
-          />
-        </Card>
-      ) : (
-        <div className="space-y-3">
-          {selected.size > 0 && (
-            // 贴在列表顶部而不是浮在底部:手机上底部有 tab 栏,浮层会盖住它
-            <div className="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-background/95 backdrop-blur px-3 py-2 shadow-sm">
-              <span className="text-[13px] font-medium">{t("queue.selectedCount", { n: selected.size })}</span>
-              <div className="flex flex-wrap gap-1.5 ml-auto">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={batchRunning}
-                  onClick={() =>
-                    runBatch(t("queue.verbPause"), selectedItems.filter((i) => i.status === "running" || i.status === "pending"), (it) =>
-                      toggle.mutateAsync({ id: it.id, action: "pause" })
-                    )
-                  }
-                >
-                  <PauseCircle className="w-3.5 h-3.5" />{t("queue.pause")}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={batchRunning}
-                  onClick={() =>
-                    runBatch(t("queue.verbResume"), selectedItems.filter((i) => i.status === "paused"), (it) =>
-                      toggle.mutateAsync({ id: it.id, action: "resume" })
-                    )
-                  }
-                >
-                  <PlayCircle className="w-3.5 h-3.5" />{t("queue.resume")}
-                </Button>
-                {/* 删除是不可逆的,单独走二次确认,不能和暂停放同一个手势层级 */}
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  disabled={batchRunning}
-                  onClick={() => setShowBatchDelete(true)}
-                >
-                  {batchRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                  {t("queue.delete")}
-                </Button>
-                <Button size="sm" variant="ghost" disabled={batchRunning} onClick={() => setSelected(new Set())}>
-                  {t("queue.deselect")}
-                </Button>
-              </div>
-            </div>
-          )}
-          {visibleItems.map((q) => (
-            <QueueRow
-              key={q.id}
-              item={q}
-              timing={timings.data?.[q.id] ?? timings.data?.[`${q.planCode}@${q.datacenter}`]}
-              selected={selected.has(q.id)}
-              onSelect={() => toggleSelect(q.id)}
-              onToggle={() =>
-                toggle.mutate({
-                  id: q.id,
-                  action: q.status === "running" || q.status === "pending" ? "pause" : "resume",
-                })
-              }
-              onEdit={async () => {
-                if (q.status === "running" || q.status === "pending") {
-                  try { await toggle.mutateAsync({ id: q.id, action: "pause" }); } catch { return; }
-                }
-                setEditingItem({ ...q, status: "paused" });
-                setShowCreateDialog(true);
-              }}
-              onDelete={() => remove.mutate(q.id)}
-            />
-          ))}
-        </div>
-      )}
-    </>
+  const [confirmAsk, confirmDialog] = useConfirm();
+
+  /** 单条暂停/恢复:任务留在当前列表,提示条带「撤销」 */
+  const toggleOne = async (q: QueueItem) => {
+    const action = q.status === "running" || q.status === "pending" ? "pause" : "resume";
+    // 结账结果不确定而暂停的任务,直接恢复可能买两台:先确认已核对 OVH 订单
+    if (action === "resume" && (q.stopReason === "checkoutUncertain" || q.stopReason === "groupUncertain")) {
+      const ok = await confirmAsk({
+        title: t("queue.uncertainResumeTitle"),
+        description: t("queue.uncertainResumeDesc"),
+        tone: "danger",
+        confirmText: t("queue.uncertainResumeConfirm"),
+      });
+      if (!ok) return;
+    }
+    keepVisible([q.id]);
+    try {
+      await toggle.mutateAsync({ id: q.id, action });
+    } catch {
+      return;
+    }
+    toast.success(t(action === "pause" ? "queue.pausedToast" : "queue.resumedToast", { plan: q.planCode, dc: q.datacenter.toUpperCase() }), {
+      action: {
+        label: t("queue.undo"),
+        onClick: () => toggle.mutate({ id: q.id, action: action === "pause" ? "resume" : "pause" }),
+      },
+    });
+  };
+
+  /** 套餐组一键暂停/恢复:逐条执行,汇总成一条提示,同样可撤销 */
+  const groupAction = async (targets: QueueItem[], action: "pause" | "resume", planCode: string, whole = false) => {
+    if (targets.length === 0) return;
+    if (action === "resume" && targets.some((i) => i.stopReason === "checkoutUncertain" || i.stopReason === "groupUncertain")) {
+      const ok = await confirmAsk({
+        title: t("queue.uncertainResumeTitle"),
+        description: t("queue.uncertainResumeDesc"),
+        tone: "danger",
+        confirmText: t("queue.uncertainResumeConfirm"),
+      });
+      if (!ok) return;
+    }
+    keepVisible(targets.map((i) => i.id));
+    setBatchRunning(true);
+    const done: QueueItem[] = [];
+    let firstError = "";
+    for (const it of targets) {
+      try {
+        await toggle.mutateAsync({ id: it.id, action });
+        done.push(it);
+      } catch (e) {
+        if (!firstError) firstError = errorMessage(e);
+      }
+    }
+    setBatchRunning(false);
+    queue.refetch();
+    if (done.length === targets.length) {
+      const key = whole
+        ? action === "pause" ? "queue.allPausedToast" : "queue.allResumedToast"
+        : action === "pause" ? "queue.groupPausedToast" : "queue.groupResumedToast";
+      toast.success(t(key, { plan: planCode, n: done.length }), {
+        action: {
+          label: t("queue.undo"),
+          onClick: () => {
+            const back = action === "pause" ? "resume" : "pause";
+            void runBatch(t(back === "pause" ? "queue.verbPause" : "queue.verbResume"), done, (it) => toggle.mutateAsync({ id: it.id, action: back }));
+          },
+        },
+      });
+    } else {
+      const failed = targets.length - done.length;
+      toast.error(t("queue.batchPartial", { label: t(action === "pause" ? "queue.verbPause" : "queue.verbResume"), ok: done.length, failed, error: firstError }));
+    }
+  };
+
+  const [againItem, setAgainItem] = useState<QueueItem | null>(null);
+  const completedAll = items.filter((i) => i.status === "completed");
+  const failedAll = items.filter((i) => i.status === "failed");
+  const [clearMenuOpen, setClearMenuOpen] = useState(false);
+  const pausableAll = items.filter((i) => (i.status === "running" || i.status === "pending") && i.stopReason !== "groupComplete");
+  const resumableAll = items.filter((i) => i.status === "paused" && i.stopReason !== "groupComplete");
+
+  /** 单行的回调;编辑运行中的任务会先暂停,保存后需要手动恢复 */
+  const rowProps = (q: QueueItem): QueueRowProps => ({
+    item: q,
+    timing: timings.data?.[q.id] ?? timings.data?.[`${q.planCode}@${q.datacenter}`],
+    selected: selected.has(q.id),
+    onSelect: () => toggleSelect(q.id),
+    onToggle: () => void toggleOne(q),
+    onBuyAgain: () => setAgainItem(q),
+    // 运行中的任务可以直接改:保存时后端中断旧配置那一轮,任务继续按新配置抢,不用先暂停再恢复
+    onEdit: () => {
+      setEditingItem(q);
+      setShowCreateDialog(true);
+    },
+    onDelete: async () => {
+      const ok = await confirmAsk({
+        title: t("queue.deleteOneTitle", { plan: q.planCode, dc: q.datacenter.toUpperCase() }),
+        description: t("queue.deleteOneDesc"),
+        tone: "danger",
+        confirmText: t("queue.delete"),
+      });
+      if (ok) remove.mutate(q.id);
+    },
+    intervalEditor: <IntervalEditor id={q.id} value={q.retryInterval} />,
+  });
+
+  // 队列状态块:加载 / 失败 / 空态 / 表格
+  const queueBody = queue.isPending ? (
+    <div className="p-4 space-y-2">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Skeleton key={i} className="h-10 rounded-md" />
+      ))}
+    </div>
+  ) : queue.isError ? (
+    /* 这页是"我有哪些任务在跑"的唯一真相来源。请求挂了还画「暂无任务」,
+       用户会以为任务压根没建成,回头再建一遍 —— 同一台机器排两条队,抢到就是两笔真实订单。
+       所以失败必须自己占一支,不能跟空态共用。 */
+    <LoadFailed icon={ClipboardList} title={t("queue.loadFailedTitle")} error={queue.error} onRetry={() => queue.refetch()} compact />
+  ) : visibleItems.length === 0 ? (
+    <EmptyState
+      illustration={items.length === 0 ? "queue" : "search"}
+      title={t(items.length === 0 ? "queue.emptyTitle" : "queue.filterEmpty")}
+      description={t(items.length === 0 ? "queue.emptyDesc" : "queue.filterEmptyHint")}
+      action={
+        items.length === 0 ? (
+          <>
+            <Button onClick={() => setShowCreateDialog(true)}>{t("queue.emptyCreate")}</Button>
+            <Button variant="outline" asChild>
+              <Link to="/servers">{t("queue.emptyBrowse")}</Link>
+            </Button>
+          </>
+        ) : (
+          <Button variant="outline" onClick={() => { setFilter("all"); setSearch(""); setSticky(new Set()); }}>{t("queue.emptyShowAll")}</Button>
+        )
+      }
+    />
+  ) : (
+    <QueueTable
+      items={visibleItems}
+      rowProps={rowProps}
+      allSelected={allSelected}
+      onSelectAll={() => setSelected(allSelected ? new Set() : new Set(visibleItems.map((i) => i.id)))}
+      onGroupAction={(targets, action, plan) => void groupAction(targets, action, plan)}
+      busy={batchRunning}
+      view={view}
+    />
+  );
+
+  // 批量操作条:只在有选中项时出现,贴在表格上方
+  const batchBar = selected.size > 0 && (
+    <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-border bg-muted/40">
+      <span className="text-[13px] font-medium">{t("queue.selectedCount", { n: selected.size })}</span>
+      <div className="flex flex-wrap gap-1.5 ml-auto">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={batchRunning}
+          onClick={() =>
+            runBatch(t("queue.verbPause"), selectedItems.filter((i) => i.status === "running" || i.status === "pending"), (it) =>
+              toggle.mutateAsync({ id: it.id, action: "pause" })
+            )
+          }
+        >
+          <PauseCircle className="w-3.5 h-3.5" />{t("queue.pause")}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={batchRunning}
+          onClick={() =>
+            runBatch(t("queue.verbResume"), selectedItems.filter((i) => i.status === "paused"), (it) =>
+              toggle.mutateAsync({ id: it.id, action: "resume" })
+            )
+          }
+        >
+          <PlayCircle className="w-3.5 h-3.5" />{t("queue.resume")}
+        </Button>
+        {/* 删除是不可逆的,单独走二次确认,不能和暂停放同一个手势层级 */}
+        <Button size="sm" variant="destructive" disabled={batchRunning} onClick={() => setShowBatchDelete(true)}>
+          {batchRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+          {t("queue.delete")}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={batchRunning} onClick={() => setSelected(new Set())}>
+          {t("queue.deselect")}
+        </Button>
+      </div>
+    </div>
   );
 
   return (
@@ -371,25 +490,75 @@ function QueuePage() {
               <Plus className="w-4 h-4" />
               {t("queue.createTask")}
             </Button>
+            {/* 全局一键暂停 / 恢复:抢购工具最常用的两个按钮,作用于全部任务(不受筛选影响) */}
+            {pausableAll.length > 0 && (
+              <Button variant="outline" disabled={batchRunning} onClick={() => void groupAction(pausableAll, "pause", "", true)}>
+                <PauseCircle className="w-4 h-4" />
+                {t("queue.pauseAllTasks")}
+                <span className="tabular-nums opacity-60">{pausableAll.length}</span>
+              </Button>
+            )}
+            {resumableAll.length > 0 && (
+              <Button variant="outline" className="text-primary border-primary/40" disabled={batchRunning} onClick={() => void groupAction(resumableAll, "resume", "", true)}>
+                <PlayCircle className="w-4 h-4" />
+                {t("queue.resumeAllTasks")}
+                <span className="tabular-nums opacity-70">{resumableAll.length}</span>
+              </Button>
+            )}
             <Button variant="outline" onClick={() => queue.refetch()} disabled={queue.isFetching}>
               <RefreshCw className={`w-4 h-4 ${queue.isFetching ? "animate-spin" : ""}`} />
               {t("queue.refresh")}
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => setSelected(allSelected ? new Set() : new Set(visibleItems.map((i) => i.id)))}
-              disabled={visibleItems.length === 0}
-            >
-              {allSelected ? t("queue.unselectAll") : t("queue.selectAll")}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowClearDialog(true)}
-              disabled={items.length === 0}
-            >
-              <Trash2 className="w-4 h-4" />
-              {t("queue.clear")}
-            </Button>
+            {/* 清空分三种:已下单(抢成功)/ 失败 / 全部。前两种只删对应状态,不动正在抢和已暂停的 */}
+            <Popover open={clearMenuOpen} onOpenChange={setClearMenuOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" disabled={items.length === 0 || batchRunning}>
+                  <Trash2 className="w-4 h-4" />
+                  {t("queue.clear")}
+                  <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-60 p-1.5">
+                {([
+                  ["completed", completedAll, t("queue.clearCompleted")],
+                  ["failed", failedAll, t("queue.clearFailed")],
+                ] as const).map(([key, list, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    disabled={list.length === 0}
+                    className="w-full flex items-center gap-2 px-2.5 h-9 rounded-md text-[13px] text-left hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
+                    onClick={async () => {
+                      setClearMenuOpen(false);
+                      const ok = await confirmAsk({
+                        title: t(key === "completed" ? "queue.clearCompletedTitle" : "queue.clearFailedTitle", { n: list.length }),
+                        description: t(key === "completed" ? "queue.clearCompletedDesc" : "queue.clearFailedDesc"),
+                        confirmText: t("queue.confirmDelete"),
+                        tone: "danger",
+                      });
+                      if (ok) void runBatch(t("queue.verbDelete"), list, (it) => remove.mutateAsync(it.id));
+                    }}
+                  >
+                    {key === "completed" ? <CheckCircle2 className="w-4 h-4 text-primary" /> : <XCircle className="w-4 h-4 text-destructive" />}
+                    <span className="flex-1">{label}</span>
+                    <span className="text-[12px] text-muted-foreground tabular-nums">{list.length}</span>
+                  </button>
+                ))}
+                <div className="my-1 h-px bg-border" />
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-2.5 h-9 rounded-md text-[13px] text-left text-destructive hover:bg-destructive/10 transition-colors"
+                  onClick={() => {
+                    setClearMenuOpen(false);
+                    setShowClearDialog(true);
+                  }}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span className="flex-1">{t("queue.clearAll")}</span>
+                  <span className="text-[12px] tabular-nums opacity-70">{items.length}</span>
+                </button>
+              </PopoverContent>
+            </Popover>
           </div>
         }
       />
@@ -407,13 +576,67 @@ function QueuePage() {
 
       <StandbyCarts />
 
-        <PearlPanel>
-          <PearlPanelHead eyebrow={t("queue.title")} meta={`${items.length}`} />
-          <div className="panel-body" style={{ paddingTop: 14 }}>
-            <div className={dense ? "space-y-1.5 queue-dense" : "space-y-3"}>{!queue.isPending && !queue.isError && <QueueStatusFilter items={items} value={filter} onChange={(next) => { setFilter(next); setSelected(new Set()); }} />}
-      {queueBody}</div>
+      {/* 状态卡片兼筛选 */}
+      <QueueStatusFilter items={items} value={filter} onChange={(next) => { setFilter(next); setSelected(new Set()); setSticky(new Set()); }} />
+
+      <Card className="overflow-hidden">
+        {/* 工具条:搜索 + 机房/账户筛选 …… 实时刷新 + 视图切换 */}
+        <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-border">
+          <div className="relative w-full sm:w-60">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" aria-hidden />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t("queue.searchPlaceholder")}
+              aria-label={t("queue.searchPlaceholder")}
+              className="h-8 pl-8 text-[13px]"
+            />
           </div>
-        </PearlPanel>
+          <FacetFilter title={t("queue.row.facetDc")} options={dcOptions} value={dcFacet} onChange={setDcFacet} />
+          <FacetFilter title={t("queue.row.facetAccount")} options={accOptions} value={accFacet} onChange={setAccFacet} />
+          {(dcFacet.size > 0 || accFacet.size > 0 || search) && (
+            <Button variant="ghost" size="sm" className="h-8 px-2 text-[12.5px]" onClick={() => { setDcFacet(new Set()); setAccFacet(new Set()); setSearch(""); }}>
+              {t("queue.row.reset")}
+              <X className="w-3.5 h-3.5" />
+            </Button>
+          )}
+          <div className="ml-auto flex items-center gap-3">
+            <span className="hidden md:inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title={t("queue.row.refreshEvery", { s: 5 })}>
+              <span className="relative flex w-2 h-2">
+                <span className="absolute inset-0 rounded-full bg-success/60 animate-ping" />
+                <span className="relative w-2 h-2 rounded-full bg-success" />
+              </span>
+              {queue.isFetching ? t("queue.row.refreshing") : t("queue.row.live")}
+            </span>
+            <div className="inline-flex rounded-lg bg-muted p-[3px]" role="group" aria-label={t("queue.row.viewLabel")}>
+              {(["grouped", "flat"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  aria-pressed={view === v}
+                  onClick={() => changeView(v)}
+                  title={t(v === "grouped" ? "queue.row.viewGrouped" : "queue.row.viewFlat")}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[12.5px] transition-colors",
+                    view === v ? "bg-card text-primary shadow-sm font-medium" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {v === "grouped" ? <Layers className="w-3.5 h-3.5" /> : <List className="w-3.5 h-3.5" />}
+                  <span className="hidden sm:inline">{t(v === "grouped" ? "queue.row.viewGrouped" : "queue.row.viewFlat")}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        {batchBar}
+        {queueBody}
+        {filter === "completed" && visibleItems.length > 0 && (
+          <p className="px-4 py-2.5 border-t border-border text-[11px] text-muted-foreground">{t("queue.retainedHint")}</p>
+        )}
+      </Card>
+
+      <BuyAgainDialog item={againItem} onClose={() => setAgainItem(null)} />
+      {confirmDialog}
 
       <Dialog open={showBatchDelete} onOpenChange={setShowBatchDelete}>
         <DialogContent>
@@ -700,7 +923,7 @@ function CreateQueueDialog({
     }
     if (editing) {
       try {
-        await update.mutateAsync({ id: editing.id, datacenter: datacenters[0], options: parsedOptions,
+        await update.mutateAsync({ id: editing.id, wasRunning: editing.status === "running" || editing.status === "pending", datacenter: datacenters[0], options: parsedOptions,
           retryInterval: Number(retryInterval) || cfgDefault, autoPay, coupon: coupon.trim(), duration });
         reset(); onOpenChange(false);
       } catch { /* Error is shown by the mutation hook; keep the form open. */ }
@@ -953,13 +1176,13 @@ function CreateQueueDialog({
             </p>
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer text-[13px]">
-            <Checkbox checked={autoPay} onCheckedChange={(v) => setAutoPay(!!v)} />
-            {t("queue.autoPay")}
-          </label>
-          <p className="text-[11px] text-muted-foreground -mt-2">
-            {autoPay ? t("queue.autoPayOn") : t("queue.autoPayOff")}
-          </p>
+          <AutoPayOption
+            checked={autoPay}
+            onChange={setAutoPay}
+            accountIds={[accountId]}
+            title={t("queue.autoPay")}
+            description={autoPay ? t("queue.autoPayOn") : t("queue.autoPayOff")}
+          />
 
           {/* 可选配置:planCode 在 catalog 里 → 走 chip 选择;
                 planCode 自定义不在 catalog → 走手填。两者互斥不同时存在。 */}
@@ -1080,175 +1303,77 @@ function CreateQueueDialog({
   );
 }
 
-export function QueueRow({
-  item,
-  timing,
-  selected,
-  onSelect,
-  onToggle,
-  onDelete,
-  onEdit,
-}: {
-  item: QueueItem;
-  timing?: PurchaseTiming;
-  selected: boolean;
-  onSelect: () => void;
-  onToggle: () => void;
-  onDelete: () => void;
-  onEdit: () => void;
-}) {
-  const { t } = useTranslation();
-  const chip = (() => {
-    if (item.status === "running")
-      return (
-        <Chip tone="success">
-          <StatusDot tone="success" pulse size="xs" />{t("queue.status.running")}
-        </Chip>
-      );
-    if (item.status === "pending")
-      return (
-        <Chip tone="warning">
-          <StatusDot tone="warning" size="xs" />{t("queue.status.pending")}
-        </Chip>
-      );
-    if (item.status === "paused")
-      return (
-        <Chip tone="default">
-          <StatusDot tone="muted" size="xs" />{t("queue.status.paused")}
-        </Chip>
-      );
-    if (item.status === "completed")
-      return (
-        <Chip tone="info">
-          <StatusDot tone="info" size="xs" />{t("queue.status.completed")}
-        </Chip>
-      );
-    return (
-      <Chip tone="danger">
-        <StatusDot tone="danger" size="xs" />{t("queue.status.failed")}
-      </Chip>
-    );
-  })();
+// 行组件已迁到 components/queue/QueueTable,保留原导出名供其它模块与测试使用
+export { QueueRow } from "@/components/queue/QueueTable";
 
+/**
+ * 再抢一单:按原任务的账户、套餐、机房、配置、周期、优惠码、预售方式新建 1 个任务。
+ * 自动付款涉及真实扣款,不默认沿用 —— 原任务开着时才出现勾选项,需要用户自己勾上。
+ */
+function BuyAgainDialog({ item, onClose }: { item: QueueItem | null; onClose: () => void }) {
+  const { t } = useTranslation();
+  const create = useCreateQueueItem();
+  const [keepAutoPay, setKeepAutoPay] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setKeepAutoPay(false);
+    setBusy(false);
+  }, [item?.id]);
+  if (!item) return null;
+  const dc = item.datacenter.toUpperCase();
+  const submit = async () => {
+    setBusy(true);
+    const r = await create.mutateAsync({
+      account_id: item.accountId,
+      planCode: item.planCode,
+      datacenters: [item.datacenter],
+      options: item.options || [],
+      quantity: 1,
+      retryInterval: item.retryInterval || undefined,
+      autoPay: !!item.autoPay && keepAutoPay,
+      coupon: item.coupon,
+      duration: item.duration,
+      preorder: item.preorder,
+    });
+    setBusy(false);
+    if (r.success > 0) {
+      toast.success(t("queue.buyAgainDone", { plan: item.planCode, dc }));
+      onClose();
+    }
+  };
+  const row = (label: string, value: ReactNode) => (
+    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 py-2 text-[13px]">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="min-w-0 break-words">{value}</span>
+    </div>
+  );
   return (
-    <Card>
-      <CardContent className="p-3 sm:p-5 flex flex-col sm:flex-row sm:items-start gap-3">
-        <div className="flex items-start gap-3 flex-1 min-w-0">
-          {/* 复选框单独占一列,点它不会触发行上的其它动作 */}
-          <Checkbox
-            checked={selected}
-            onCheckedChange={onSelect}
-            aria-label={t("queue.selectTaskAria", { plan: item.planCode, dc: item.datacenter })}
-            className="mt-0.5 flex-shrink-0"
-          />
-          <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="font-mono font-semibold text-sm">{item.planCode}</span>
-            <AccountChip accountId={item.accountId} />
-            {item.preorder && <Chip tone="warning">{t("queue.preorderBadge")}</Chip>}
-            {item.orderGroup && <Chip>{t("queue.groupLimit", { n: item.groupLimit })}</Chip>}
-            <Chip><OrderDurationLabel value={item.duration} /></Chip>
-            {item.stopReason && <Chip tone="warning">{t(`queue.${item.stopReason}`)}</Chip>}
-            {item.status === "running" && item.orderPhase && <Chip tone="info">{t(`queue.phase.${item.orderPhase}`)}</Chip>}
-            {item.coupon && <Chip>{t("queue.couponValue", { code: item.coupon })}</Chip>}
-            <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
-            {item.options && item.options.length > 0 && (
-              // 以前只显示个数。而一个型号底下几套配置的差别恰恰在这里 ——
-              // 同时下了三单时,用户看到三张"含 2 个可选配置"的卡片,
-              // 分不出哪一单抢的是 64G+NVMe、哪一单是 32G+HDD。
-              // describeOptionCodes 纯靠 code 正则解析,不需要目录,
-              // 机型下架或目录没拉到时也能显示。
-              <Chip tone="default" title={item.options.join("\n")}>
-                {describeOptionCodes(item.options)}
-              </Chip>
-            )}
-            {item.autoPay && (
-              <Chip tone="warning" title={t("queue.autoPayChipTitle")}>
-                {t("queue.autoPayChip")}
-              </Chip>
-            )}
-            {item.status !== "completed" && <TimingChip totalMs={timing?.totalMs} phases={timing?.phases} />}
-          </div>
-          <div className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
-            <Clock className="w-3 h-3" />
-            {/* failed / completed 是终态,不会再重试 —— 再显示"下次尝试"会让用户以为还在排队。
-                失败原因写在抢购历史里,这里给一句指引。 */}
-            {item.status === "failed" ? (
-              <span>{t("queue.stoppedRetrying")}</span>
-            ) : item.status === "completed" ? (
-              <Link to="/history" className="inline-flex min-h-10 items-center gap-1.5 text-sm font-medium text-foreground underline-offset-4 hover:underline">{item.orderId ? t("queue.orderRecord", { id: item.orderId }) : t("queue.viewHistory")}</Link>
-            ) : item.status === "paused" ? (
-              <span>{t(item.stopReason ? `queue.${item.stopReason}` : "queue.waitingResume")}</span>
-            ) : item.orderPhase === "waitingQuota" ? (
-              <span>{t("queue.quotaWaitHint")}</span>
-            ) : item.orderPhase === "submitting" ? (
-              <span>{t("queue.phase.submitting")}</span>
-            ) : item.preorder && item.orderPhase ? (
-              <span>{t("queue.liveSaleHint")}</span>
-            ) : (
-              <span className="inline-flex items-center gap-1">
-                {t("queue.nextAttempt")}
-                {item.retryCount > 0 ? (
-                  <>
-                    <IntervalEditor id={item.id} value={item.retryInterval} />
-                    {t("queue.retryInSec", { n: item.retryCount + 1 })}
-                  </>
-                ) : (
-                  t("queue.startingSoon")
-                )}
-              </span>
-            )}
-            {timing && item.status !== "completed" && (
-              <>
-                <span>·</span>
-                {/* 上一轮的结论。"没货"和"下单失败"是两件事:前者说明这台机器
-                    OVH 就是没放货,后者说明我们这边有问题,该看历史里的错误信息 */}
-                <span>
-                  {t("queue.lastRound")}
-                  {timing.outcome === "unavailable"
-                    ? t("queue.outcome.unavailable")
-                    : timing.outcome === "ordered"
-                      ? t("queue.outcome.ordered")
-                      : t("queue.outcome.error")}
-                </span>
-              </>
-            )}
-            {timing?.dispatch?.wroteRequest && (
-              <>
-                <span>·</span>
-                <span title={`${t(timing.dispatch.prewarmed ? "queue.cartPrewarmed" : "queue.cartCold")} · ${t(timing.dispatch.connectionReused ? "queue.connectionReused" : "queue.connectionCold")}`}>
-                  {t("queue.dispatchDelay", { us: timing.dispatch.detectionToWriteUs })}
-                  {timing.dispatchStats && <span className="ml-2" title={t("queue.dispatchWindow")}>
-                    {t("queue.dispatchPercentiles", { p50: timing.dispatchStats.p50Us, p99: timing.dispatchStats.p99Us, n: timing.dispatchStats.samples })}
-                  </span>}
-                </span>
-              </>
-            )}
-            {typeof item.failureCount === "number" && item.failureCount > 0 && (
-              <>
-                <span>·</span>
-                <span>{t("queue.failureCount", { n: item.failureCount })}</span>
-              </>
-            )}
-            <span>·</span>
-            <span>{fmtDateTime(item.createdAt)}</span>
-          </div>
-          </div>
+    <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t("queue.buyAgainTitle")}</DialogTitle>
+          <DialogDescription>{t("queue.buyAgainDesc")}</DialogDescription>
+        </DialogHeader>
+        <div className="divide-y divide-border rounded-lg border border-border px-3">
+          {row(t("queue.buyAgainAccount"), <AccountChip accountId={item.accountId} />)}
+          {row(t("queue.buyAgainPlan"), <span className="font-mono font-medium">{item.planCode} @ {dc}</span>)}
+          {row(t("queue.buyAgainConfig"), item.options?.length ? describeOptionCodes(item.options) : t("history.defaultOptions"))}
+          {row(t("queue.buyAgainDuration"), <OrderDurationLabel value={item.duration} />)}
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {chip}
-          {item.status !== "completed" && <Button variant="ghost" size="sm" onClick={onEdit} aria-label={t("queue.edit")}><Pencil className="w-4 h-4" />{t("queue.edit")}</Button>}
-          {item.status !== "completed" && item.status !== "failed" && item.stopReason !== "groupComplete" && (
-            <Button variant="ghost" size="sm" onClick={onToggle} aria-label={item.status === "paused" ? t("queue.resume") : t("queue.pause")}>
-              {item.status === "paused" ? <PlayCircle className="w-4 h-4" /> : <PauseCircle className="w-4 h-4" />}
-              {item.status === "paused" ? t("queue.resume") : t("queue.pause")}
-            </Button>
-          )}
-          <Button variant="ghost" size="icon" onClick={onDelete} aria-label={t("queue.delete")}>
-            <X className="w-4 h-4" />
+        {item.autoPay && (
+          <label className="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/[.06] p-3 text-[13px] cursor-pointer">
+            <Checkbox className="mt-0.5" checked={keepAutoPay} onCheckedChange={(v) => setKeepAutoPay(v === true)} />
+            <span>{t("queue.buyAgainKeepAutoPay")}</span>
+          </label>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={busy}>{t("history.cancel")}</Button>
+          <Button onClick={() => void submit()} disabled={busy}>
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCw className="w-4 h-4" />}
+            {t("queue.buyAgainConfirm")}
           </Button>
-        </div>
-      </CardContent>
-    </Card>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

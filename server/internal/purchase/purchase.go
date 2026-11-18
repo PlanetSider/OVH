@@ -18,6 +18,7 @@ import (
 	"github.com/ovh-buy/server/internal/numconv"
 	"github.com/ovh-buy/server/internal/orderterm"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/paycheck"
 	"github.com/ovh-buy/server/internal/telegram"
 	"github.com/ovh-buy/server/internal/types"
 	"time"
@@ -507,6 +508,15 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	// 异步补:从 /me/order/{orderID} 读 expirationDate + 价格,写回 history
 	if orderID != "" {
 		go backfillOrderDetail(state, client, item.ID, orderID)
+		if item.AutoPay {
+			// 请求了自动付款 ≠ 已扣款:后台核对订单状态,未付上时通知用户手动付款。
+			// 用独立 SDK 实例,不与 backfill 并发共用同一个 client。
+			if acc, ok := state.FindAccount(item.AccountID); ok {
+				if checkClient, err := state.OVH.IsolatedClientForAccount(acc); err == nil {
+					paycheck.Watch(state, checkClient, item.PlanCode+"@"+strings.ToUpper(item.Datacenter), orderID, ovh.ManagerOrderURL(acc.Endpoint, orderID))
+				}
+			}
+		}
 	}
 
 	state.Logger.Info(fmt.Sprintf("成功购买 %s 在 %s (订单ID: %s)",

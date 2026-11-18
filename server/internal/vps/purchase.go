@@ -20,6 +20,7 @@ import (
 	"github.com/ovh-buy/server/internal/numconv"
 	"github.com/ovh-buy/server/internal/orderterm"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/paycheck"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -531,8 +532,8 @@ func autoOrderOnRestock(ctx context.Context, state *app.State, sub types.VPSSubs
 		}
 
 		if out.Success {
-			// 同独服:checkout 是 autoPayWithPreferredPaymentMethod:false,
-			// "成功"= 订单已创建、未付款、逾期作废。通知里必须说清楚。
+			// 同独服:未开自动付款时"成功"= 订单已创建、未付款、逾期作废;
+			// 开了也只代表已请求扣款,结果由下面的 paycheck 核对。通知里必须说清楚。
 			payNote := "⚠️ 订单尚未付款：请尽快打开订单链接完成付款,逾期未付订单会自动作废。\n" +
 				"(撤回资格与退款金额以 OVH 订单页面显示为准)"
 			if sub.AutoPay {
@@ -553,6 +554,13 @@ func autoOrderOnRestock(ctx context.Context, state *app.State, sub types.VPSSubs
 				msg += "\n⚠️ " + out.Reason
 			}
 			notify.Broadcast(state, msg, nil)
+			if sub.AutoPay {
+				if acc, ok := state.FindAccount(sub.AutoOrderAccountID); ok {
+					if checkClient, err := state.OVH.IsolatedClientForAccount(acc); err == nil {
+						paycheck.Watch(state, checkClient, "VPS "+sub.PlanCode+"@"+code, out.OrderID, linkURL)
+					}
+				}
+			}
 			// 抢到就停:订阅是"盯着补货",不是"把所有机房都买一遍"
 			return
 		}
