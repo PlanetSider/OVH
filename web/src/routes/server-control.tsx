@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { Terminal, Server, RefreshCw, Eye, EyeOff, CalendarClock, Repeat, Activity, Undo2, PartyPopper, Pencil, ChevronsUpDown, ChevronRight, Copy } from "lucide-react";
+import { Terminal, Server, RefreshCw, Eye, EyeOff, CalendarClock, Repeat, Activity, Undo2, PartyPopper, Pencil, ChevronsUpDown, ChevronRight, Copy, Receipt, LifeBuoy, HardDrive, Loader2, Network } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,10 +12,12 @@ import { StatusDot } from "@/components/common/StatusDot";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LoadFailed, errorMessage } from "@/components/common/LoadFailed";
-import { fmtDate, fmtDateTime } from "@/i18n/format";
+import { fmtDate, fmtDateTime, fmtMoney } from "@/i18n/format";
 import {
   useOwnedServers,
   useServerServiceInfo,
+  useServerPricing,
+  useServerBootState,
   useServerMonitoring,
   useToggleMonitoring,
   useRetraction,
@@ -56,6 +59,7 @@ function ServerControlPage() {
   const { hidden, toggle } = useHideIp();
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [activeAccount, setActiveAccount] = useActiveServerControlAccount();
+  const qc = useQueryClient();
   const accountsQ = useAccounts();
   const accounts = accountsQ.data;
   const servers = q.data || [];
@@ -115,7 +119,17 @@ function ServerControlPage() {
                 {hidden ? t("serverList.hiddenTip") : t("serverList.hideIp")}
               </TooltipContent>
             </Tooltip>
-            <Button variant="outline" onClick={() => q.refetch()} disabled={q.isFetching}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                void q.refetch();
+                // 同时刷新当前服务器的标题卡数据(续费/费用/启动状态/监控等)
+                if (selectedName) {
+                  void qc.invalidateQueries({ predicate: (query) => query.queryKey[0] === "server-control" && query.queryKey[2] === selectedName });
+                }
+              }}
+              disabled={q.isFetching}
+            >
               <RefreshCw className={`w-4 h-4 ${q.isFetching ? "animate-spin" : ""}`} />
               {t("common.refresh")}
             </Button>
@@ -281,6 +295,7 @@ function ServerTabs({
 }) {
   const { t } = useTranslation();
   const info = useServerServiceInfo(server.serviceName);
+  const pricing = useServerPricing(server.serviceName);
   // 14 天无理由撤单的资格。只有 OVH 明确说还在窗口内才会渲染入口 ——
   // 判据是它返回的 retractionDate,不是自己算"开通不到 14 天":
   // v0.1.24 之前下的单在结账时就弃权了,自己算会给它们显示一个必然失败的按钮。
@@ -329,11 +344,11 @@ function ServerTabs({
       <Card className="overflow-hidden">
         <div className="relative px-4 sm:px-6 pt-5 pb-4">
           <div className="absolute inset-0 bg-gradient-to-r from-primary/[0.06] via-transparent to-transparent pointer-events-none" aria-hidden />
-          <div className="relative flex items-start gap-4">
+          <div className="relative flex flex-wrap sm:flex-nowrap items-start gap-x-4 gap-y-3">
             <span className="hidden sm:flex w-12 h-12 rounded-xl bg-card ring-1 ring-border shadow-sm items-center justify-center shrink-0">
               <OsIcon templateName={server.os || ""} size={26} />
             </span>
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 basis-full sm:basis-auto">
               <div className="flex items-center gap-1.5 min-w-0">
                 {switcher ? (
                   <Popover open={switchOpen} onOpenChange={setSwitchOpen}>
@@ -347,7 +362,7 @@ function ServerTabs({
                         {titleNode}
                       </button>
                     </PopoverTrigger>
-                    <PopoverContent align="start" className="w-[min(340px,calc(100vw-32px))] p-0 overflow-hidden" onClick={() => setSwitchOpen(false)}>
+                    <PopoverContent align="start" className="w-[min(340px,calc(100vw-32px))] p-0 overflow-hidden flex flex-col" onClick={() => setSwitchOpen(false)}>
                       {switcher}
                     </PopoverContent>
                   </Popover>
@@ -381,8 +396,9 @@ function ServerTabs({
                 )}
               </div>
             </div>
-            <div className="shrink-0 flex flex-col sm:flex-row items-end sm:items-center gap-1.5">
+            <div className="shrink-0 flex flex-wrap items-center gap-1.5 sm:flex-col sm:items-end lg:flex-row lg:items-center">
               {/* 中奖标记:列表摘要里的 won/tier(详情横幅在「概览」里)。以前挂在左侧列表行上,列表去掉后放到这里 */}
+              <BootChip serviceName={server.serviceName} />
               {server.lottery?.won && (
                 <span
                   className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[12.5px] font-semibold text-amber-700 dark:text-amber-300 bg-gradient-to-r from-amber-100 to-yellow-50 dark:from-amber-500/20 dark:to-amber-400/10 ring-1 ring-amber-300/70 dark:ring-amber-400/30"
@@ -405,9 +421,9 @@ function ServerTabs({
         </div>
 
         {/* 关键信息:能点的(续费、系统)带箭头;到期快到时变色;监控用开关 */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 border-t border-border divide-x divide-y lg:divide-y-0 divide-border [&>*:nth-child(2n+1)]:border-l-0 lg:[&>*:nth-child(2n+1)]:border-l">
+        <div className="grid grid-cols-2 lg:grid-cols-5 border-t border-border divide-x divide-y lg:divide-y-0 divide-border [&>*:nth-child(2n+1)]:border-l-0 lg:[&>*:nth-child(2n+1):not(:first-child)]:border-l">
           {info.isPending ? (
-            Array.from({ length: 4 }).map((_, i) => (
+            Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="px-4 sm:px-6 py-3.5">
                 <Skeleton className="h-3 w-12 mb-2" />
                 <Skeleton className="h-4 w-24" />
@@ -421,6 +437,7 @@ function ServerTabs({
                 value={info.data ? formatRenewal(t, info.data) : "—"}
                 onClick={info.data ? () => setRenewalOpen(true) : undefined}
               />
+              <PriceCell pricing={pricing} />
               <FactCell
                 icon={<Terminal className="w-3.5 h-3.5" />}
                 label={t("serverList.hero.os")}
@@ -435,7 +452,7 @@ function ServerTabs({
                 sub={daysLeft === null ? undefined : daysLeft < 0 ? t("serverList.hero.expired") : t("serverList.hero.daysLeft", { n: daysLeft })}
                 tone={expTone}
               />
-              <div className="px-4 sm:px-6 py-3.5 min-w-0">
+              <div className="col-span-2 lg:col-span-1 px-4 sm:px-6 py-3.5 min-w-0">
                 <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
                   <Activity className="w-3.5 h-3.5" />
                   {t("serverList.hero.monitor")}
@@ -572,11 +589,13 @@ function FactCell({
   onClick,
   tone,
   mono,
+  title,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   sub?: string;
+  title?: string;
   onClick?: () => void;
   tone?: FactTone;
   mono?: boolean;
@@ -602,12 +621,116 @@ function FactCell({
     </>
   );
   return onClick ? (
-    <button type="button" onClick={onClick} className="group px-4 sm:px-6 py-3.5 min-w-0 text-left hover:bg-primary/[.035] transition-colors">
+    <button type="button" onClick={onClick} title={title} className="group px-4 sm:px-6 py-3.5 min-w-0 text-left hover:bg-primary/[.035] transition-colors">
       {body}
     </button>
   ) : (
-    <div className="px-4 sm:px-6 py-3.5 min-w-0">{body}</div>
+    <div className="px-4 sm:px-6 py-3.5 min-w-0" title={title}>{body}</div>
   );
+}
+
+/** 启动状态标签:救援模式 / 正常启动,以及是否已生效(重启中、待重启、未确认);悬停看说明 */
+function BootChip({ serviceName }: { serviceName: string }) {
+  const { t } = useTranslation();
+  const q = useServerBootState(serviceName);
+  if (q.isPending) return null;
+  if (q.isError || !q.data) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[12.5px] font-medium bg-muted text-muted-foreground"
+        title={t("serverList.hero.boot.failed", { detail: q.isError ? errorMessage(q.error) : "—" })}
+      >
+        <HardDrive className="w-3.5 h-3.5" aria-hidden />
+        {t("serverList.hero.boot.unknownLabel")}
+      </span>
+    );
+  }
+  const d = q.data;
+  const rescue = d.bootType === "rescue";
+  const disk = d.bootType === "harddisk";
+  const typeName =
+    d.bootType === "network" ? t("serverList.hero.boot.typeNetwork")
+    : d.bootType === "internal" ? t("serverList.hero.boot.typeInternal")
+    : d.bootType === "power" ? t("serverList.hero.boot.typePower")
+    : d.bootType || "?";
+  let label: string;
+  if (d.effect === "rebooting") label = rescue ? t("serverList.hero.boot.rebootingRescue") : t("serverList.hero.boot.rebootingNormal");
+  else if (d.effect === "pending") label = rescue ? t("serverList.hero.boot.pendingRescue") : disk ? t("serverList.hero.boot.pendingNormal") : t("serverList.hero.boot.pendingOther", { type: typeName });
+  else if (d.effect === "unknown" && rescue) label = t("serverList.hero.boot.unknownRescue");
+  else label = rescue ? t("serverList.hero.boot.rescue") : disk ? t("serverList.hero.boot.normal") : t("serverList.hero.boot.other", { type: typeName });
+
+  const tone = rescue
+    ? "bg-amber-100 text-amber-800 ring-1 ring-amber-300/70 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-400/30"
+    : d.effect === "rebooting" || d.effect === "pending"
+      ? "bg-primary/10 text-primary"
+      : "bg-muted text-muted-foreground";
+  const Icon = d.effect === "rebooting" ? Loader2 : rescue ? LifeBuoy : disk ? HardDrive : Network;
+  const explain =
+    d.effect === "rebooting" ? t("serverList.hero.boot.titleRebooting")
+    : d.effect === "pending" ? t("serverList.hero.boot.titlePending")
+    : d.effect === "unknown" ? t("serverList.hero.boot.titleUnknown")
+    : d.changedAt ? t("serverList.hero.boot.titleActive")
+    : disk ? t("serverList.hero.boot.titleActiveDefault")
+    : t("serverList.hero.boot.titleUnknown");
+  const title = [
+    explain,
+    d.description ? t("serverList.hero.boot.titleNext", { desc: d.description }) : "",
+    d.reboot?.status
+      ? t("serverList.hero.boot.titleLastReboot", {
+          status: d.reboot.status,
+          date: d.reboot.doneDate ? fmtDateTime(d.reboot.doneDate) : d.reboot.startDate ? fmtDateTime(d.reboot.startDate) : "",
+        })
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <span className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[12.5px] font-medium cursor-help ${tone}`} title={title} role="status">
+      <Icon className={`w-3.5 h-3.5 ${d.effect === "rebooting" ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden />
+      {label}
+    </span>
+  );
+}
+
+/** "P1M" → "/ 月";"P12M" → "/ 12 个月";"P1Y" → "/ 年" */
+function perPeriod(t: (k: string, o?: Record<string, unknown>) => string, duration: string): string {
+  const m = /^P(\d+)([MY])$/.exec(duration || "");
+  if (!m) return "";
+  const n = Number(m[1]);
+  if (m[2] === "Y") return n === 1 ? t("serverList.hero.perYear") : t("serverList.hero.perYears", { n });
+  if (n === 12) return t("serverList.hero.perYear");
+  return n === 1 ? t("serverList.hero.perMonth") : t("serverList.hero.perMonths", { n });
+}
+
+/** 费用格:续费价格(主机 + 附加选项,不含税)+ 目录安装费;悬停说明来源与口径 */
+function PriceCell({ pricing }: { pricing: ReturnType<typeof useServerPricing> }) {
+  const { t } = useTranslation();
+  const d = pricing.data;
+  const r = d?.renewal;
+  const inst = d?.installation;
+  const value = pricing.isPending
+    ? t("serverList.hero.loading")
+    : r
+      ? `${r.partial ? "≈ " : ""}${fmtMoney(r.amount, r.currency)} ${perPeriod(t, r.duration)}`.trim()
+      : "—";
+  const sub =
+    inst?.ok && inst.amount != null && inst.currency
+      ? t("serverList.hero.setup", { amount: `${inst.partial ? "≈ " : ""}${fmtMoney(inst.amount, inst.currency)}` })
+      : d
+        ? t("serverList.hero.setupUnknown")
+        : undefined;
+  const title = pricing.isError
+    ? t("serverList.hero.priceFailed", { detail: errorMessage(pricing.error) })
+    : [
+        t("serverList.hero.priceTitle", {
+          options: r && r.options > 0 ? t("serverList.hero.priceOptions", { n: r.options }) : "",
+          withTax: inst?.ok && inst.amount != null && inst.currency ? fmtMoney(inst.amount + (inst.tax || 0), inst.currency) : "—",
+        }),
+        r?.partial ? t("serverList.hero.pricePartial") : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+  return <FactCell icon={<Receipt className="w-3.5 h-3.5" />} label={t("serverList.hero.price")} value={value} sub={sub} title={title} />;
 }
 
 /**

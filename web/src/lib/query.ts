@@ -95,8 +95,10 @@ export const qk = {
     list: (accountId: string) => ["server-control", "list", accountId] as const,
     hardware: (serviceName: string) => ["server-control", "hardware", serviceName] as const,
     rescue: (serviceName: string) => ["server-control", "rescue", serviceName] as const,
+    bootState: (serviceName: string) => ["server-control", "boot-state", serviceName] as const,
     spla: (serviceName: string) => ["server-control", "spla", serviceName] as const,
     serviceInfo: (serviceName: string) => ["server-control", "service-info", serviceName] as const,
+    pricing: (serviceName: string) => ["server-control", "pricing", serviceName] as const,
     ips: (serviceName: string) => ["server-control", "ips", serviceName] as const,
     interventions: (serviceName: string) => ["server-control", "interventions", serviceName] as const,
     networkInterfaces: (serviceName: string) => ["server-control", "network", serviceName] as const,
@@ -165,6 +167,8 @@ export const qk = {
     refunds: (accountId: string) => ["account", "refunds", accountId] as const,
     emails: (accountId: string) => ["account", "emails", accountId] as const,
     orders: (accountId: string) => ["account", "orders", accountId] as const,
+    creditBalance: (accountId: string) => ["account", "credit-balance", accountId] as const,
+    topup: (accountId: string) => ["account", "topup", accountId] as const,
   },
 
   // 账户的出站代理:健康状况 + 最近一次出口 IP 测试。

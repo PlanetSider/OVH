@@ -90,6 +90,89 @@ export function useAccountInfo() {
   });
 }
 
+/** 信用余额(GET /me/credit/balance 及详情),只读 */
+export interface CreditBalance {
+  balanceName: string;
+  type: string;
+  usable: boolean;
+  amount?: { value?: number; currencyCode?: string; text?: string };
+  expiring?: { amount?: { value?: number; currencyCode?: string; text?: string }; expirationDate?: string }[];
+}
+
+export function useCreditBalances() {
+  const accountId = useAccountScope();
+  return useQuery({
+    queryKey: qk.account.creditBalance(accountId),
+    queryFn: async () => {
+      const res = await api.get<{ data?: CreditBalance[]; failed?: number }>("/ovh/account/credit-balance", { params: { account: accountId } });
+      return { list: res.data?.data || [], failed: res.data?.failed || 0 };
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** 预付款账户(GET /me/ovhAccount,只有 EU/CA);supported=false 表示该站点没有充值接口 */
+export interface TopupInfo {
+  accountId: string;
+  supported: boolean;
+  accounts: { id: string; balance: number | null; currency: string; balanceText: string; canBeCredited: boolean; isActive: boolean }[];
+}
+
+export function useTopupInfo(accountId: string) {
+  return useQuery({
+    queryKey: qk.account.topup(accountId),
+    queryFn: async () => (await api.get<TopupInfo>("/ovh/account/topup", { params: { account: accountId } })).data,
+    enabled: !!accountId,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export interface TopupOrder {
+  accountId: string;
+  orderId: number;
+  url?: string;
+  amount: number | null;
+  currency: string;
+  priceText: string;
+}
+
+/** 生成充值订单(只生成待付款订单,不扣款);不自动重试,避免多出几张订单 */
+export function useCreateTopup(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { ovhAccountId: string; amount: number }) =>
+      (await api.post<TopupOrder>("/ovh/account/topup", { ...body, confirm: true }, { params: { account: accountId } })).data,
+    retry: false,
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: qk.account.orders(accountId) });
+    },
+  });
+}
+
+export interface RedeemResult {
+  balanceName: string;
+  type: string;
+  amount: number | null;
+  currency: string;
+  text: string;
+  expirationDate?: string;
+}
+
+/** 兑换券码到余额(POST /me/credit/code);不自动重试 */
+export function useRedeemCode(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (code: string) =>
+      (await api.post<RedeemResult>("/ovh/account/credit-code", { code }, { params: { account: accountId } })).data,
+    retry: false,
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: qk.account.creditBalance(accountId) });
+      qc.invalidateQueries({ queryKey: qk.account.topup(accountId) });
+    },
+  });
+}
+
 /**
  * 退款记录。
  * body 仍是裸数组，但后端在部分详情拉取失败时会带 X-Partial-Failures 头，
@@ -141,7 +224,15 @@ export interface OrderPaymentInfo {
   priceText: string;
   attempted: boolean;
   methods: { id: number; type: string; label: string; default: boolean }[];
+  /** 可用信用余额(预付款/代金券/赠送/押金);enough=同币种且足够付清整单 */
+  balances?: { name: string; type: string; amount: number; currency: string; text: string; enough: boolean }[];
+  balanceError?: string;
 }
+
+/** 付款请求体:绑定支付方式,或用余额付清整单(POST /me/order/{id}/balance) */
+export type OrderPayBody =
+  | { kind: "method"; accountId: string; paymentMethodId: number; paymentType: string; amount: number; currency: string; confirm: true }
+  | { kind: "balance"; accountId: string; balanceName: string; amount: number; currency: string; confirm: true };
 
 /** 打开付款窗口时只读取可用方式,不产生付款请求。 */
 export function useOrderPaymentInfo(accountId: string, orderId: number, open: boolean) {
@@ -156,15 +247,18 @@ export function useOrderPaymentInfo(accountId: string, orderId: number, open: bo
 export function usePayAccountOrder(accountId: string, orderId: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { accountId: string; paymentMethodId: number; paymentType: string; amount: number; currency: string; confirm: true }) => {
-      const { accountId: pinnedAccount, ...payload } = body;
-      return (await api.post(`/ovh/account/orders/${orderId}/pay`, payload, { params: { account: pinnedAccount } })).data;
+    mutationFn: async (body: OrderPayBody): Promise<{ status?: string; orderStatus?: string; message?: string }> => {
+      const { accountId: pinnedAccount, kind, ...payload } = body;
+      const path = kind === "balance" ? "pay-balance" : "pay";
+      return (await api.post(`/ovh/account/orders/${orderId}/${path}`, payload, { params: { account: pinnedAccount } })).data;
     },
     retry: false,
     onSettled: () => {
       qc.invalidateQueries({ queryKey: qk.account.orders(accountId) });
       qc.invalidateQueries({ queryKey: qk.account.orderPayment(accountId, orderId) });
       qc.invalidateQueries({ queryKey: qk.history() });
+      qc.invalidateQueries({ queryKey: qk.account.creditBalance(accountId) });
+      qc.invalidateQueries({ queryKey: qk.account.topup(accountId) });
     },
   });
 }

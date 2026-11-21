@@ -9,8 +9,11 @@ import { QueueStatusFilter, type QueueFilter } from "@/components/queue/QueueSta
 import { QueueTable, type QueueRowProps } from "@/components/queue/QueueTable";
 import { FacetFilter, type FacetOption } from "@/components/queue/FacetFilter";
 import { useConfirm } from "@/components/common/ConfirmDialog";
+import { QueueEditDialog } from "@/routes/servers";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
+import { isOrderable } from "@/lib/availability";
 import { OrderPrewarm, StandbyCarts } from "@/components/queue/OrderPrewarm";
 import { useOrderPrewarm } from "@/hooks/use-order-prewarm";
 import { createFileRoute, Link } from "@tanstack/react-router";
@@ -27,6 +30,7 @@ import {
   Loader2,
   Search,
   RotateCw,
+  AlertTriangle,
   Layers,
   List,
   ChevronDown,
@@ -91,9 +95,14 @@ import { fmtDateTime } from "@/i18n/format";
 export const Route = createFileRoute("/queue")({
   component: QueuePage,
   /** 支持 ?create=KS-A-1&options=ram-64g,softraid-2x450nvme 形式：自动打开新建对话框并预填 */
-  validateSearch: (search): { create?: string; options?: string } => ({
+  // account / dc / duration:从购买历史「再抢一单」带过来,保证在原账户、原机房、原周期上新建,
+  // 而不是落到当前全局账户、还要重新选机房
+  validateSearch: (search): { create?: string; options?: string; account?: string; dc?: string; duration?: string } => ({
     create: typeof search.create === "string" ? search.create : undefined,
     options: typeof search.options === "string" ? search.options : undefined,
+    account: typeof search.account === "string" ? search.account : undefined,
+    dc: typeof search.dc === "string" ? search.dc : undefined,
+    duration: typeof search.duration === "string" ? search.duration : undefined,
   }),
 });
 
@@ -178,21 +187,26 @@ function QueuePage() {
   const remove = useRemoveQueueItem();
   const clear = useClearQueue();
   const navigate = Route.useNavigate();
-  const { create: createPlanCode, options: createOptions } = Route.useSearch();
+  const { create: createPlanCode, options: createOptions, account: createAccount, dc: createDc, duration: createDuration } = Route.useSearch();
   const [showClearDialog, setShowClearDialog] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [editingItem, setEditingItem] = useState<QueueItem | null>(null);
   const [prefillPlanCode, setPrefillPlanCode] = useState<string>("");
   const [prefillOptions, setPrefillOptions] = useState<string>("");
+  const [prefillExtra, setPrefillExtra] = useState<CreatePrefill | null>(null);
 
   // 从其它页跳到 /queue?create=KS-A-1&options=...，自动打开新建对话框并预填
+  // ?create= 不带型号(例如仪表盘的「创建抢购任务」)也打开空白对话框;打开后清掉参数,刷新不会再弹
   useEffect(() => {
-    if (createPlanCode) {
+    if (createPlanCode !== undefined) {
       setPrefillPlanCode(createPlanCode);
       setPrefillOptions(createOptions || "");
+      setPrefillExtra(createAccount || createDc || createDuration ? { accountId: createAccount, datacenter: createDc, duration: createDuration } : null);
       setShowCreateDialog(true);
+      void navigate({ to: "/queue", search: {}, replace: true });
     }
-  }, [createPlanCode, createOptions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createPlanCode, createOptions, createAccount, createDc, createDuration]);
 
   const items = queue.data || [];
   // 默认看「运行中」:打开队列最关心的是正在抢的任务;已下单/失败记录在其它筛选里
@@ -239,6 +253,7 @@ function QueuePage() {
     .map(([value, count]) => ({ value, count, label: <AccountChip accountId={value} /> }));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchRunning, setBatchRunning] = useState(false);
+  const [batchInterval, setBatchInterval] = useState("");
   const [showBatchDelete, setShowBatchDelete] = useState(false);
 
   // 任务被别处删掉(TG /cancel、监控自动清理)后,选中集合里会留下不存在的 id。
@@ -362,6 +377,7 @@ function QueuePage() {
   };
 
   const [againItem, setAgainItem] = useState<QueueItem | null>(null);
+  const [richEdit, setRichEdit] = useState<QueueItem | null>(null);
   const completedAll = items.filter((i) => i.status === "completed");
   const failedAll = items.filter((i) => i.status === "failed");
   const [clearMenuOpen, setClearMenuOpen] = useState(false);
@@ -377,10 +393,9 @@ function QueuePage() {
     onToggle: () => void toggleOne(q),
     onBuyAgain: () => setAgainItem(q),
     // 运行中的任务可以直接改:保存时后端中断旧配置那一轮,任务继续按新配置抢,不用先暂停再恢复
-    onEdit: () => {
-      setEditingItem(q);
-      setShowCreateDialog(true);
-    },
+    // 编辑用与服务器列表相同的抢购弹窗(价格、规格、带库存的配置与机房);
+    // 目录里没有这款机型(手填型号等)时,QueueEditDialog 会回调,退回简易表单
+    onEdit: () => setRichEdit(q),
     onDelete: async () => {
       const ok = await confirmAsk({
         title: t("queue.deleteOneTitle", { plan: q.planCode, dc: q.datacenter.toUpperCase() }),
@@ -469,6 +484,33 @@ function QueuePage() {
           {batchRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
           {t("queue.delete")}
         </Button>
+        {/* 批量改重试间隔:选中的任务一次改完,不用逐个点开 */}
+        <form
+          className="inline-flex items-center gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const n = Number(batchInterval);
+            if (!n || n < RETRY_INTERVAL.min || n > RETRY_INTERVAL.max) {
+              toast.error(t("queue.intervalRangeError", { min: RETRY_INTERVAL.min, max: RETRY_INTERVAL.max }));
+              return;
+            }
+            void runBatch(t("queue.verbInterval"), selectedItems.filter((i) => i.status !== "completed"), (it) =>
+              api.put(`/queue/${encodeURIComponent(it.id)}/interval`, { retryInterval: n }),
+            ).then(() => setBatchInterval(""));
+          }}
+        >
+          <Input
+            value={batchInterval}
+            onChange={(e) => /^\d*$/.test(e.target.value) && setBatchInterval(e.target.value)}
+            inputMode="numeric"
+            placeholder={t("queue.batchIntervalPlaceholder")}
+            aria-label={t("queue.batchIntervalPlaceholder")}
+            className="h-8 w-[104px] text-[12.5px]"
+          />
+          <Button size="sm" variant="outline" type="submit" disabled={batchRunning || !batchInterval}>
+            <Clock className="w-3.5 h-3.5" />{t("queue.batchIntervalApply")}
+          </Button>
+        </form>
         <Button size="sm" variant="ghost" disabled={batchRunning} onClick={() => setSelected(new Set())}>
           {t("queue.deselect")}
         </Button>
@@ -636,6 +678,15 @@ function QueuePage() {
       </Card>
 
       <BuyAgainDialog item={againItem} onClose={() => setAgainItem(null)} />
+      <QueueEditDialog
+        editing={richEdit}
+        onClose={() => setRichEdit(null)}
+        onUnavailable={(item) => {
+          setRichEdit(null);
+          setEditingItem(item);
+          setShowCreateDialog(true);
+        }}
+      />
       {confirmDialog}
 
       <Dialog open={showBatchDelete} onOpenChange={setShowBatchDelete}>
@@ -697,16 +748,20 @@ function QueuePage() {
             setEditingItem(null);
             setPrefillPlanCode("");
             setPrefillOptions("");
+            setPrefillExtra(null);
             // 清掉 URL 上的 create / options 参数
             navigate({ search: () => ({}) as any, replace: true });
           }
         }}
         initialPlanCode={editingItem?.planCode || prefillPlanCode}
         initialOptions={editingItem ? (editingItem.options || []).join(",") : prefillOptions}
+        prefill={editingItem ? null : prefillExtra}
       />
     </div>
   );
 }
+
+type CreatePrefill = { accountId?: string; datacenter?: string; duration?: string };
 
 /** 创建抢购任务对话框 */
 function CreateQueueDialog({
@@ -715,12 +770,14 @@ function CreateQueueDialog({
   initialPlanCode,
   initialOptions,
   editing,
+  prefill,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   initialPlanCode?: string;
   initialOptions?: string;
   editing?: QueueItem | null;
+  prefill?: CreatePrefill | null;
 }) {
   const { t } = useTranslation();
   const create = useCreateQueueItem();
@@ -737,7 +794,8 @@ function CreateQueueDialog({
   // 还是我们没读到账户。
   const accountsQ = useAccounts();
   const accounts = accountsQ.data;
-  const accountId = selectedAccountId ||
+  // 预填的账户(历史「再抢一单」)已被删除时退回全局账户,不让创建按钮无故灰着;列表未读到前先保留原值
+  const accountId = (selectedAccountId && (!accounts || findAccountByID(accounts, selectedAccountId)) ? selectedAccountId : "") ||
     findAccountByID(accounts, globalAccountId)?.id ||
     accounts?.find((a) => a.isDefault)?.id || accounts?.[0]?.id || "";
   const activeAcc = findAccountByID(accounts, accountId);
@@ -779,8 +837,13 @@ function CreateQueueDialog({
 
   useEffect(() => {
     if (open) {
-      setSelectedAccountId(editing?.accountId || "");
+      setSelectedAccountId(editing?.accountId || prefill?.accountId || "");
       if (initialPlanCode) setPlanCode(initialPlanCode);
+      if (!editing && prefill?.datacenter) {
+        const dc = prefill.datacenter;
+        setDatacenters([OVH_DATACENTERS.find((d) => apiDatacenterCode(d.code) === apiDatacenterCode(dc))?.code || dc]);
+      }
+      if (!editing && prefill?.duration) setDuration(prefill.duration);
       if (editing) {
         setDatacenters([OVH_DATACENTERS.find((dc) => apiDatacenterCode(dc.code) === apiDatacenterCode(editing.datacenter))?.code || editing.datacenter]);
         setQuantity(String(editing.groupLimit || 1));
@@ -791,7 +854,7 @@ function CreateQueueDialog({
         setCoupon(editing.coupon || "");
       }
     }
-  }, [initialPlanCode, open, editing]);
+  }, [initialPlanCode, open, editing, prefill]);
 
   /** planCode 匹配到的服务器（用于显示名称提示） */
   const matchedServer = useMemo(
@@ -800,7 +863,7 @@ function CreateQueueDialog({
   );
   const [preorderPlan, setPreorderPlan] = useState("");
   const preorder = !!editing?.preorder || !!matchedServer?.prerelease || (!!planCode.trim() && preorderPlan === planCode.trim());
-  const purchaseMode: PurchaseMode = editing ? (editing.orderGroup ? "total" : "perDatacenter") : chosenScope || (preorder ? "total" : "perDatacenter");
+  const purchaseMode: PurchaseMode = editing ? (editing.orderGroup ? "total" : "perDatacenter") : chosenScope || (preorder || datacenters.length > 1 ? "total" : "perDatacenter");
   useEffect(() => setPreorderPlan((previous) => retainPreorderPlan(previous, planCode.trim(), !!matchedServer?.prerelease)), [planCode, matchedServer?.prerelease]);
 
   // 切 planCode 清空 picked —— 之前选的 addon 对新机型多半不适用。
@@ -854,6 +917,20 @@ function CreateQueueDialog({
     const options = matchedServer ? [...new Set([...(Object.values(picked).filter(Boolean) as string[]), ...splitList(extraInput)])] : splitList(extraInput);
     return preorder ? preorderOptions(options, grouped?.cpu.map((option) => option.value)) : options;
   }, [matchedServer, picked, extraInput, preorder, grouped]);
+  const queueAll = useQueueList();
+  const duplicates = useMemo(() => {
+    if (editing || !planCode.trim() || datacenters.length === 0) return [];
+    const want = [...parsedOptions].sort().join("|");
+    const dcs = new Set(datacenters.map((d) => apiDatacenterCode(d)));
+    return (queueAll.data || []).filter(
+      (q) =>
+        (q.status === "running" || q.status === "pending" || q.status === "paused") &&
+        q.accountId === accountId &&
+        q.planCode === planCode.trim() &&
+        dcs.has(apiDatacenterCode(q.datacenter)) &&
+        [...(q.options || [])].sort().join("|") === want,
+    );
+  }, [editing, planCode, datacenters, parsedOptions, queueAll.data, accountId]);
 
   // option chip 的绿/红点:跟服务器列表对话框同一套逻辑
   const variants = matchedServer ? variantIndex[matchedServer.planCode] : undefined;
@@ -909,11 +986,25 @@ function CreateQueueDialog({
 
   const toggleDC = (code: string) => {
     setDatacenters((prev) =>
-      prev.includes(code) ? prev.filter((c) => c !== code) : editing ? [code] : [...prev, code]
+      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
     );
   };
 
-  const selectAllDC = () => setDatacenters(OVH_DATACENTERS.map((d) => d.code));
+  // 这款机型各机房的库存(目录 + 实时库存合并后的结果);键为 API 机房代码
+  const dcStock = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of matchedServer?.datacenters || []) m.set(apiDatacenterCode(d.datacenter), d.availability);
+    return m;
+  }, [matchedServer]);
+  const [showAllDC, setShowAllDC] = useState(false);
+  // 默认只列这款机型在卖的机房(已勾选的始终保留);型号不在目录里时列全部
+  const dcList = useMemo(() => {
+    if (dcStock.size === 0 || showAllDC) return OVH_DATACENTERS;
+    return OVH_DATACENTERS.filter((d) => dcStock.has(apiDatacenterCode(d.code)) || datacenters.includes(d.code));
+  }, [dcStock, showAllDC, datacenters]);
+  const inStockDC = dcList.filter((d) => isOrderable(dcStock.get(apiDatacenterCode(d.code)) || ""));
+  const selectAllDC = () => setDatacenters(dcList.map((d) => d.code));
+  const selectInStockDC = () => setDatacenters(inStockDC.map((d) => d.code));
   const clearAllDC = () => setDatacenters([]);
 
   const handleSubmit = async () => {
@@ -923,8 +1014,29 @@ function CreateQueueDialog({
     }
     if (editing) {
       try {
-        await update.mutateAsync({ id: editing.id, wasRunning: editing.status === "running" || editing.status === "pending", datacenter: datacenters[0], options: parsedOptions,
+        // 一个任务对应一个机房:原机房仍勾着就留给原任务,其余每个机房按同样设置各新增一个任务
+        const original = datacenters.find((d) => apiDatacenterCode(d) === apiDatacenterCode(editing.datacenter));
+        const keep = original || datacenters[0];
+        const extra = datacenters.filter((d) => d !== keep);
+        await update.mutateAsync({ id: editing.id, wasRunning: editing.status === "running" || editing.status === "pending", datacenter: keep, options: parsedOptions,
           retryInterval: Number(retryInterval) || cfgDefault, autoPay, coupon: coupon.trim(), duration });
+        if (extra.length > 0) {
+          const r = await create.mutateAsync({
+            account_id: editing.accountId,
+            planCode: editing.planCode,
+            datacenters: extra,
+            quantity: 1,
+            purchaseMode: "perDatacenter",
+            retryInterval: Number(retryInterval) || cfgDefault,
+            options: parsedOptions,
+            autoPay,
+            coupon,
+            duration,
+            preorder: !!editing.preorder,
+          });
+          if (r.success > 0) toast.success(t("queue.editExtraCreated", { n: r.success }));
+          if (r.failed > 0) return; // 新增失败时保留弹窗,错误已由创建逻辑提示
+        }
         reset(); onOpenChange(false);
       } catch { /* Error is shown by the mutation hook; keep the form open. */ }
       return;
@@ -1066,9 +1178,9 @@ function CreateQueueDialog({
             )}
           </div>
 
-          {/* 数据中心多选 */}
+          {/* 数据中心:多选;显示这款机型在各机房的库存;默认只列在卖的机房 */}
           <div>
-            <div className="flex items-center justify-between mb-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-1.5">
               <label className="block text-[13px] font-medium">
                 {t("queue.dcLabel")}
                 {datacenters.length > 0 && (
@@ -1077,44 +1189,69 @@ function CreateQueueDialog({
                   </span>
                 )}
               </label>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={selectAllDC}
-                  disabled={!!editing}
-                  className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                >
+              <div className="flex items-center gap-2.5 text-[12px]">
+                {dcStock.size > 0 && (
+                  <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                    <StatusDot tone={inStockDC.length > 0 ? "success" : "danger"} size="xs" />
+                    {t("queue.dcStockSummary", { ok: inStockDC.length, total: dcList.length })}
+                  </span>
+                )}
+                {inStockDC.length > 0 && (
+                  <button type="button" onClick={selectInStockDC} className="text-primary hover:underline underline-offset-2">
+                    {t("queue.dcSelectInStock")}
+                  </button>
+                )}
+                <button type="button" onClick={selectAllDC} className="text-muted-foreground hover:text-foreground transition-colors">
                   {t("queue.selectAll")}
                 </button>
-                <span className="text-muted-foreground text-[11px]">/</span>
-                <button
-                  type="button"
-                  onClick={clearAllDC}
-                  className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                >
+                <button type="button" onClick={clearAllDC} className="text-muted-foreground hover:text-foreground transition-colors">
                   {t("queue.clear")}
                 </button>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 border border-border rounded-2xl p-3 max-h-56 overflow-y-auto">
-              {OVH_DATACENTERS.map((dc) => {
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-64 overflow-y-auto">
+              {dcList.map((dc) => {
                 const checked = datacenters.includes(dc.code);
+                const raw = dcStock.get(apiDatacenterCode(dc.code));
+                const known = raw !== undefined;
+                const ok = known && isOrderable(raw);
                 return (
                   <label
                     key={dc.code}
-                    className="flex items-center gap-2 cursor-pointer text-[13px] py-1"
+                    className={cn(
+                      "flex items-center gap-2.5 cursor-pointer rounded-xl border px-3 py-2 text-[13px] transition-colors",
+                      checked ? "border-primary/60 bg-primary/[.05]" : "border-border hover:bg-muted/40",
+                    )}
+                    title={`${t(`commons.dc.${dc.code}`, { defaultValue: dc.name })} (${dc.code})`}
                   >
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={() => toggleDC(dc.code)}
-                    />
-                    <span className="truncate" title={`${t(`commons.dc.${dc.code}`, { defaultValue: dc.name })} (${dc.code})`}>
-                      <span className="font-mono uppercase">{dc.code}</span>
-                      <span className="text-muted-foreground ml-1">{t(`commons.dc.${dc.code}`, { defaultValue: dc.name })}</span>
+                    <Checkbox checked={checked} onCheckedChange={() => toggleDC(dc.code)} />
+                    <span className="min-w-0 flex-1 truncate">
+                      <span className="font-mono font-semibold uppercase">{dc.code}</span>
+                      <span className="text-muted-foreground ml-1.5">{t(`commons.dc.${dc.code}`, { defaultValue: dc.name })}</span>
                     </span>
+                    {dcStock.size > 0 && (
+                      <span className={cn("inline-flex items-center gap-1 text-[11.5px] whitespace-nowrap", ok ? "text-success" : known ? "text-destructive" : "text-muted-foreground")}>
+                        <StatusDot tone={ok ? "success" : known ? "danger" : "muted"} size="xs" pulse={ok && !checked} />
+                        {t(ok ? "queue.dcInStock" : known ? "queue.dcOutOfStock" : "queue.dcNotOffered")}
+                      </span>
+                    )}
                   </label>
                 );
               })}
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11.5px] text-muted-foreground">
+              <span>
+                {editing && datacenters.length > 1
+                  ? t("queue.editMultiDcHint", { n: datacenters.length - 1 })
+                  : dcStock.size > 0
+                    ? t("queue.dcStockHint")
+                    : ""}
+              </span>
+              {dcStock.size > 0 && dcStock.size < OVH_DATACENTERS.length && (
+                <button type="button" onClick={() => setShowAllDC((v) => !v)} className="hover:text-foreground underline underline-offset-2">
+                  {t(showAllDC ? "queue.dcShowOffered" : "queue.dcShowAll")}
+                </button>
+              )}
             </div>
           </div>
 
@@ -1255,6 +1392,20 @@ function CreateQueueDialog({
 
 
           {/* 汇总提示 */}
+          {/* 同账户已有相同型号 + 机房 + 配置的进行中任务:再建会额外多买,先说清楚 */}
+          {duplicates.length > 0 && (
+            <div className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/[.07] px-3 py-2.5 text-[12.5px]" role="status">
+              <AlertTriangle className="w-4 h-4 mt-px shrink-0 text-warning" />
+              <span>
+                {t("queue.duplicateHint", {
+                  n: duplicates.length,
+                  dcs: [...duplicates.reduce((m, d) => m.set(d.datacenter.toUpperCase(), (m.get(d.datacenter.toUpperCase()) || 0) + 1), new Map<string, number>())]
+                    .map(([dc, n]) => `${dc} ×${n}`)
+                    .join(" · "),
+                })}
+              </span>
+            </div>
+          )}
           {!editing && datacenters.length > 0 && (
             <div className="border border-border rounded-2xl p-3 text-[12px] text-muted-foreground">
               <Trans

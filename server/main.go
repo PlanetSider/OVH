@@ -388,6 +388,7 @@ func main() {
 			// 一键救援:改 netboot → 设收信邮箱 → 重启,三步合一。
 			// 手动做要在 OVH 后台点四步,而漏掉最后的重启是最常见的错误。
 			sc.GET("/:service_name/rescue", handlers.GetRescueStatus(state))
+			sc.GET("/:service_name/boot-state", handlers.GetBootState(state))
 			sc.POST("/:service_name/rescue", handlers.EnterRescue(state))
 			sc.POST("/:service_name/rescue/exit", handlers.ExitRescue(state))
 			sc.GET("/:service_name/boot", handlers.GetBootConfig(state))
@@ -405,6 +406,7 @@ func main() {
 			sc.POST("/:service_name/reverse", handlers.SetReverseDNS(state))
 			sc.DELETE("/:service_name/reverse/:ip", handlers.DeleteReverseDNS(state))
 			sc.GET("/:service_name/serviceinfo", handlers.GetServiceInfo(state))
+			sc.GET("/:service_name/pricing", handlers.GetServerPricing(state))
 			sc.PUT("/:service_name/serviceinfo/renewal", handlers.UpdateServiceRenewal(state))
 
 			// engagement(合同期切换)
@@ -594,7 +596,11 @@ func main() {
 		api.GET("/ovh/account/orders", handlers.GetAccountOrders(state))
 		api.GET("/ovh/account/orders/:order_id/payment", handlers.GetOrderPaymentOptions(state))
 		api.POST("/ovh/account/orders/:order_id/pay", handlers.PayAccountOrder(state))
+		api.POST("/ovh/account/orders/:order_id/pay-balance", handlers.PayAccountOrderWithBalance(state))
 		api.GET("/ovh/account/credit-balance", handlers.GetCreditBalance(state))
+		api.GET("/ovh/account/topup", handlers.GetTopupInfo(state))
+		api.POST("/ovh/account/topup", handlers.CreateTopupOrder(state))
+		api.POST("/ovh/account/credit-code", handlers.RedeemCreditCode(state))
 		api.GET("/ovh/account/default-payment-method", handlers.GetDefaultPaymentMethod(state))
 		api.GET("/ovh/account/email-history", handlers.GetEmailHistory(state))
 		api.GET("/ovh/contact-change-requests", handlers.GetContactChangeRequests(state))

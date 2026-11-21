@@ -97,16 +97,39 @@ function SettingsPage() {
   // 配置到底有没有读到手。没读到就绝不能保存 —— 见 onSave 里的说明。
   const [loaded, setLoaded] = useState(false);
 
+  // baseline:上次从后端读到的配置。后台重新读取时,只有用户没改动才用新值覆盖表单,
+  // 否则保留正在编辑的内容(以前每次读回来都会直接覆盖,没保存的修改会被悄悄冲掉)。
+  const [baseline, setBaseline] = useState<SettingsConfig | null>(null);
+  const [apiKeyBaseline, setApiKeyBaseline] = useState("");
   useEffect(() => {
-    if (cfg.data) {
-      setForm(cfg.data);
-      setLoaded(true);
-    }
+    if (!cfg.data) return;
+    setForm((prev) => (!baseline || stableJson(prev) === stableJson(baseline) ? cfg.data! : prev));
+    setBaseline(cfg.data);
+    setLoaded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg.data]);
 
   useEffect(() => {
-    setApiKey(getApiSecretKey() || "");
+    const k = getApiSecretKey() || "";
+    setApiKey(k);
+    setApiKeyBaseline(k);
   }, []);
+
+  const dirty = (loaded && !!baseline && stableJson(form) !== stableJson(baseline)) || apiKey !== apiKeyBaseline;
+  const discard = () => {
+    if (baseline) setForm(baseline);
+    setApiKey(apiKeyBaseline);
+  };
+  // 有未保存的修改时,关闭或刷新页面前让浏览器提醒
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
 
   // 值类型按 key 取:抢购间隔是 number | undefined,其余是 string
   const set = <K extends keyof SettingsConfig>(k: K, v: SettingsConfig[K]) =>
@@ -118,7 +141,10 @@ function SettingsPage() {
     // Webhook。这不是显示错误,是直接把用户的配置删了,而且他自己看不出来
     // (界面本来就显示空,保存完还是空)。所以读失败时这个按钮必须是禁用的。
     // 访问密码只写 localStorage,不经过后端配置,配置读失败也照存不误
-    if (apiKey) setApiSecretKey(apiKey);
+    if (apiKey) {
+      setApiSecretKey(apiKey);
+      setApiKeyBaseline(apiKey);
+    }
     if (!loaded) {
       toast.error(t("settings.notLoadedToast"));
       return;
@@ -138,6 +164,13 @@ function SettingsPage() {
         title={t("settings.title")}
         description={t("settings.description")}
         action={
+          <div className="flex items-center gap-2.5">
+          {dirty && (
+            <span className="inline-flex items-center gap-1.5 text-[12.5px] text-warning" role="status">
+              <span className="w-1.5 h-1.5 rounded-full bg-warning" aria-hidden />
+              {t("settings.unsaved")}
+            </span>
+          )}
           <Button
             onClick={onSave}
             disabled={save.isPending || !savableSection}
@@ -146,13 +179,14 @@ function SettingsPage() {
             <Save className="w-4 h-4" />
             {save.isPending ? t("settings.saving") : t("settings.saveButton")}
           </Button>
+          </div>
         }
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-4">
-        {/* sub-nav:桌面竖向左栏;手机/平板为多列网格,全部可见,不横向滚动 */}
+        {/* sub-nav:桌面竖向左栏;平板多列网格;手机 4 列图标在上、文字在下,全部可见不截断、不横向滚动 */}
         <div className="relative lg:contents">
-        <nav className="lg:space-y-1 grid grid-cols-3 sm:grid-cols-4 lg:flex lg:flex-col gap-1 lg:gap-0">
+        <nav className="lg:space-y-1 grid grid-cols-4 lg:flex lg:flex-col gap-1 lg:gap-0">
           {SECTIONS.map((s) => {
             const Icon = s.icon;
             const a = active === s.id;
@@ -162,7 +196,7 @@ function SettingsPage() {
                 type="button"
                 onClick={() => setActive(s.id)}
                 className={cn(
-                  "flex items-center gap-2 px-2.5 lg:px-3 py-2 rounded-md text-[13px] transition-colors whitespace-nowrap min-w-0",
+                  "flex flex-col sm:flex-row items-center gap-1 sm:gap-2 px-1 sm:px-2.5 lg:px-3 py-2 rounded-md text-[12px] sm:text-[13px] transition-colors min-w-0",
                   "lg:w-full lg:border-l-2",
                   a
                     ? "bg-secondary text-foreground font-medium lg:border-l-foreground"
@@ -170,7 +204,7 @@ function SettingsPage() {
                 )}
               >
                 <Icon className="w-4 h-4 shrink-0" />
-                <span className="truncate">{t(s.label)}</span>
+                <span className="text-center sm:text-left leading-tight break-words max-w-full sm:truncate">{t(s.label)}</span>
               </button>
             );
           })}
@@ -228,7 +262,35 @@ function SettingsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* 有未保存的修改时,底部浮出保存栏:随时能保存或放弃,不用滚回页头 */}
+      {dirty && (
+        <div className="sticky bottom-3 z-20 flex justify-center pointer-events-none">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-xl border border-warning/40 bg-card/95 backdrop-blur px-4 py-2.5 shadow-[0_10px_30px_-10px_rgba(15,35,80,.35)] animate-in fade-in slide-in-from-bottom-2 duration-200">
+            <span className="inline-flex items-center gap-1.5 text-[13px]">
+              <span className="w-1.5 h-1.5 rounded-full bg-warning" aria-hidden />
+              {t("settings.unsavedBar")}
+            </span>
+            <Button variant="ghost" size="sm" className="h-8" onClick={discard} disabled={save.isPending}>
+              {t("settings.discard")}
+            </Button>
+            <Button size="sm" className="h-8" onClick={onSave} disabled={save.isPending || !savableSection}>
+              <Save className="w-3.5 h-3.5" />
+              {save.isPending ? t("settings.saving") : t("settings.saveButton")}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+/** 键顺序无关的 JSON,用于判断表单是否改动 */
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(Object.entries(val as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
+      : val,
   );
 }
 
@@ -1228,7 +1290,7 @@ function LinkCheckDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 py-1 max-h-[65vh] overflow-y-auto -mx-6 px-6">
+        <div className="space-y-3 py-1 max-h-[65vh] overflow-y-auto -mx-4 px-4 sm:-mx-6 sm:px-6">
           {/* 这一次走的是什么配置。代理地址是打过码的,和编辑框里那份写法一致,可以直接核对 */}
           <div className="rounded-xl border border-border bg-secondary/30 px-3 py-2.5 space-y-1.5">
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -1672,7 +1734,7 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
           <DialogTitle>{isEdit ? t("settings.accounts.editAccountTitle", { name: acc!.name }) : t("settings.accounts.addAccountTitle")}</DialogTitle>
           <DialogDescription>{t("settings.accounts.dialogDesc")}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-2 max-h-[65vh] overflow-y-auto -mx-6 px-6">
+        <div className="space-y-4 py-2 max-h-[65vh] overflow-y-auto -mx-4 px-4 sm:-mx-6 sm:px-6">
           <Field label={t("settings.accounts.nameLabel")}>
             <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder={t("settings.accounts.namePlaceholder")} autoFocus />
             {isEdit && (
